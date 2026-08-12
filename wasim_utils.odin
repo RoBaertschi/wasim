@@ -9,6 +9,7 @@ List :: struct($T: typeid)
 }
 
 list_push :: proc(list: ^List($T), node: ^T) {
+	list.count += 1
 	if intrinsics.unlikely(list.first == nil) {
 		list.first = node
 		list.last  = node
