@@ -12,12 +12,32 @@ MAGIC   :: u32(0x6D736100)
 VERSION :: u32(1)
 
 Binary_Reader :: struct {
-	data: []byte,
-	pos:  int,
-	file: string,
-	m:    ^Module,
+	data:   []byte,
+	pos:    int,
+	file:   string,
+	m:      ^Module,
+	bounds: Rng1(int),
 
 	errors: int,
+}
+
+reader_push_bounds :: proc(r: ^Binary_Reader, bounds: Rng1(int)) -> (old_bounds: Rng1(int)) {
+	old_bounds = r.bounds
+	r.bounds   = rng1_clamp_to_slice(bounds, rng1_slice(r.bounds, r.data))
+	return
+}
+
+reader_pop_bounds :: proc(r: ^Binary_Reader, old_bounds: Rng1(int)) {
+	r.bounds = old_bounds
+}
+
+_reader_end_bounds :: proc(r: ^Binary_Reader, _, old_bounds: Rng1(int)) {
+	reader_pop_bounds(r, old_bounds)
+}
+
+@(deferred_in_out=_reader_end_bounds)
+reader_bounds_guard :: proc(r: ^Binary_Reader, bounds: Rng1(int)) -> (old_bounds: Rng1(int)) {
+	return reader_push_bounds(r, bounds)
 }
 
 Section_Kind :: enum byte {
@@ -35,9 +55,30 @@ Section_Kind :: enum byte {
 	Data,
 }
 
-Section :: struct {
-	kind: Section_Kind,
+Value_Type :: enum byte {
+	I32,
+	I64,
+	U32,
+	U64,
+}
+
+Function_Type :: struct {
+	args: []Value_Type,
+	rets: []Value_Type,
+}
+
+Type_Index :: distinct u32
+
+Code :: struct {
 	size: int,
+}
+
+Section :: struct {
+	kind:  Section_Kind,
+	size:  int,
+	types: []Function_Type,
+	funcs: []Type_Index,
+	codes: []Code,
 }
 
 Section_Node :: struct {
@@ -60,14 +101,23 @@ errorf :: proc(r: ^Binary_Reader, pos: int, format: string, args: ..any) {
 	fmt.printfln(format, ..args)
 }
 
+reader_relative_pos :: proc(r: ^Binary_Reader) -> int {
+	return r.pos - r.bounds.start
+}
+
+reader_bounded_data :: proc(r: ^Binary_Reader) -> []byte {
+	return rng1_slice(r.bounds, r.data)
+}
+
 reader_data_left :: proc(r: ^Binary_Reader) -> int {
-	return len(r.data) - r.pos
+	return len(rng1_slice(r.bounds, r.data)) - reader_relative_pos(r)
 }
 
 read_bytes :: proc(r: ^Binary_Reader, count: int) -> (bytes: []byte, ok: bool) {
 	if count <= reader_data_left(r) {
-		bytes = r.data[r.pos:r.pos+count]
-		ok    = true
+		pos   := reader_relative_pos(r)
+		bytes  = rng1_slice(r.bounds, r.data)[pos:pos+count]
+		ok     = true
 
 		r.pos += count
 	} else {
@@ -88,11 +138,26 @@ read_t :: proc(r: ^Binary_Reader, $T: typeid) -> (value: T, ok: bool) {
 	return
 }
 
+read_u32 :: proc(r: ^Binary_Reader) -> (u32, bool) { return read_t(r, u32) }
+
+read_byte :: proc(r: ^Binary_Reader) -> (result: u8, ok: bool) {
+	if 1 <= reader_data_left(r) {
+		pos    := reader_relative_pos(r)
+		result  = rng1_slice(r.bounds, r.data)[pos]
+		ok      = true
+		r.pos  += 1
+	} else {
+		errorf(r, r.pos, "missing byte")
+	}
+
+	return
+}
+
 read_uXX_leb :: proc(r: ^Binary_Reader, $T: typeid) -> (value: T, ok: bool) where intrinsics.type_is_integer(T), intrinsics.type_is_unsigned(T) {
 	MAX_BYTES :: int(intrinsics.constant_ceil(f64(size_of(value) * 8) / 7))
 	MAX       :: u128(max(T))
 
-	value_u128, size, err := varint.decode_uleb128_buffer(r.data[r.pos:])
+	value_u128, size, err := varint.decode_uleb128_buffer(rng1_slice(r.bounds, r.data)[reader_relative_pos(r):])
 	switch err {
 	case .None:
 		// validate LEB u32 size
@@ -115,20 +180,125 @@ read_uXX_leb :: proc(r: ^Binary_Reader, $T: typeid) -> (value: T, ok: bool) wher
 	return
 }
 
-read_u32 :: proc(r: ^Binary_Reader) -> (u32, bool) { return read_t(r, u32) }
-
 read_u32_leb :: proc(r: ^Binary_Reader) -> (value: u32, ok: bool) { return read_uXX_leb(r, u32) }
 
 as :: proc($T: typeid, a: $A, ok: bool) -> (T, bool) {
 	return (T)(a), ok
 }
 
+read_vec :: proc(r: ^Binary_Reader, parse_proc: proc(r: ^Binary_Reader) -> ($T, bool)) -> (data: []T, ok: bool) {
+	size: u32
+	size, ok = read_u32_leb(r)
+	if ok {
+		data, _ = virtual.make(&r.m.arena, []T, size)
+
+		for i in 0..<size {
+			data[i], ok = parse_proc(r)
+			if !ok {
+				break
+			}
+		}
+	}
+
+	return
+}
+
+read_value_type :: proc(r: ^Binary_Reader) -> (value_type: Value_Type, ok: bool) {
+	value_type_byte: byte
+	value_type_byte, ok = read_byte(r)
+
+	if ok {
+		if value_type_byte <= byte(max(Value_Type)) {
+			value_type = Value_Type(value_type_byte)
+		} else {
+			errorf(r, r.pos - 1, "invalid value type %v: %v(0) <= %v(%v)", value_type_byte, min(Value_Type), max(Value_Type), byte(max(Value_Type)))
+		}
+	}
+
+	return
+}
+
+read_func_type :: proc(r: ^Binary_Reader) -> (type: Function_Type, ok: bool) {
+	identify_byte: byte
+	identify_byte, ok = read_byte(r)
+	if ok {
+		FUNCTION_TYPE_IDENTIFY_BYTE :: 0x60
+
+		if identify_byte == FUNCTION_TYPE_IDENTIFY_BYTE {
+			type.args, ok = read_vec(r, read_value_type)
+			if ok {
+				type.rets, ok = read_vec(r, read_value_type)
+			}
+		} else {
+			ok = false
+			errorf(
+				r,
+				r.pos - 1,
+				"expected identifying byte for function, but got unknown one: %v != FUNCTION_TYPE_IDENTIFY_BYTE(%v)",
+				identify_byte,
+				FUNCTION_TYPE_IDENTIFY_BYTE,
+			)
+		}
+	}
+
+	return
+}
+
+read_code :: proc(r: ^Binary_Reader) -> (code: Code, ok: bool) {
+	code.size, ok = as(int, read_u32_leb(r))
+	if ok {
+		if reader_relative_pos(r) + code.size <= len(reader_bounded_data(r)) {
+			r.pos += code.size
+		} else {
+			ok = false
+			errorf(r, r.pos, "out of bounds code size, pos(%v) + size(%v) in bounds %v", r.pos, code.size, r.bounds)
+		}
+	}
+
+	return
+}
+
+read_type_section :: proc(r: ^Binary_Reader) -> (types: []Function_Type, ok: bool) {
+	types, ok = read_vec(r, read_func_type)
+	return
+}
+
+read_func_section :: proc(r: ^Binary_Reader) -> (funcs: []Type_Index, ok: bool) {
+	funcs, ok = read_vec(r, proc(r: ^Binary_Reader) -> (type_index: Type_Index, ok: bool) { return as(Type_Index, read_u32_leb(r)) })
+	return
+}
+
+read_code_section :: proc(r: ^Binary_Reader) -> (codes: []Code, ok: bool) {
+	codes, ok = read_vec(r, read_code)
+	return
+}
+
 read_section :: proc(r: ^Binary_Reader) -> (section: Section, ok: bool) {
 	section.kind, ok = read_t(r, Section_Kind)
 	if ok {
-		section.size, ok = as(int, read_u32_leb(r))
-		if ok {
-			r.pos += section.size
+		if u8(section.kind) <= u8(max(Section_Kind)) {
+			section.size, ok = as(int, read_u32_leb(r))
+			if ok {
+				reader_bounds_guard(r, rng1(r.pos, r.pos+section.size))
+
+				switch section.kind {
+				case .Custom: // do nothing
+				case .Type:     section.types, ok = read_type_section(r)
+				case .Import:   // unimplemented()
+				case .Function: section.funcs, ok = read_func_section(r)
+				case .Table:    // unimplemented()
+				case .Memory:   // unimplemented()
+				case .Global:   // unimplemented()
+				case .Export:   // unimplemented()
+				case .Start:    // unimplemented()
+				case .Element:  // unimplemented()
+				case .Code:     section.codes, ok = read_code_section(r)
+				case .Data:     // unimplemented()
+				}
+			}
+		} else {
+			ok = false
+			errorf(r, r.pos, "invalid section kind %d, expected 0..=%v", u8(section.kind), u8(max(Section_Kind)))
 		}
 	}
 
@@ -154,7 +324,8 @@ read_sections_into_module :: proc(r: ^Binary_Reader) -> (ok: bool) {
 }
 
 read_module :: proc(r: ^Binary_Reader) -> (ok: bool) {
-	r.m, _ = virtual.arena_growing_bootstrap_new(Module, "arena")
+	r.m, _   = virtual.arena_growing_bootstrap_new(Module, "arena")
+	r.bounds = rng1(0, len(r.data))
 
 	// read magic number
 	magic: u32
@@ -178,10 +349,12 @@ read_module :: proc(r: ^Binary_Reader) -> (ok: bool) {
 						}
 					}
 				} else {
+					ok = false
 					errorf(r, r.pos-size_of(version), "unsupported WASM version %v, currently only WASM 1.0 is supported", version)
 				}
 			}
 		} else {
+			ok = false
 			errorf(r, r.pos-size_of(magic), "invalid magic number %v, expected %v", magic, MAGIC)
 		}
 	}
