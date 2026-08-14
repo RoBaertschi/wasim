@@ -1,12 +1,13 @@
 package wasim
 
-import "core:math/bits"
-import "base:intrinsics"
-import "core:mem/virtual"
-import "core:flags"
 import "core:os"
 import "core:fmt"
+import "core:flags"
 import "core:encoding/varint"
+
+import "base:intrinsics"
+
+import B "base"
 
 MAGIC   :: u32(0x6D736100)
 VERSION :: u32(1)
@@ -16,27 +17,27 @@ Binary_Reader :: struct {
 	pos:    int,
 	file:   string,
 	m:      ^Module,
-	bounds: Rng1(int),
+	bounds: B.Rng1(int),
 
 	errors: int,
 }
 
-reader_push_bounds :: proc(r: ^Binary_Reader, bounds: Rng1(int)) -> (old_bounds: Rng1(int)) {
+reader_push_bounds :: proc(r: ^Binary_Reader, bounds: B.Rng1(int)) -> (old_bounds: B.Rng1(int)) {
 	old_bounds = r.bounds
-	r.bounds   = rng1_clamp_to_slice(bounds, rng1_slice(r.bounds, r.data))
+	r.bounds   = B.rng1_clamp_to_slice(bounds, B.rng1_slice(r.bounds, r.data))
 	return
 }
 
-reader_pop_bounds :: proc(r: ^Binary_Reader, old_bounds: Rng1(int)) {
+reader_pop_bounds :: proc(r: ^Binary_Reader, old_bounds: B.Rng1(int)) {
 	r.bounds = old_bounds
 }
 
-_reader_end_bounds :: proc(r: ^Binary_Reader, _, old_bounds: Rng1(int)) {
+_reader_end_bounds :: proc(r: ^Binary_Reader, _, old_bounds: B.Rng1(int)) {
 	reader_pop_bounds(r, old_bounds)
 }
 
 @(deferred_in_out=_reader_end_bounds)
-reader_bounds_guard :: proc(r: ^Binary_Reader, bounds: Rng1(int)) -> (old_bounds: Rng1(int)) {
+reader_bounds_guard :: proc(r: ^Binary_Reader, bounds: B.Rng1(int)) -> (old_bounds: B.Rng1(int)) {
 	return reader_push_bounds(r, bounds)
 }
 
@@ -75,6 +76,7 @@ Code :: struct {
 
 Section :: struct {
 	kind:  Section_Kind,
+	pos:   int,
 	size:  int,
 	types: []Function_Type,
 	funcs: []Type_Index,
@@ -89,9 +91,10 @@ Section_Node :: struct {
 Section_List :: List(Section_Node)
 
 Module :: struct {
-	arena:    virtual.Arena,
-	version:  int,
-	sections: Section_List,
+	arena:    ^B.Arena,
+	arenas:   []^B.Arena,
+	version:  u32,
+	sections: []Section,
 }
 
 errorf :: proc(r: ^Binary_Reader, pos: int, format: string, args: ..any) {
@@ -106,17 +109,17 @@ reader_relative_pos :: proc(r: ^Binary_Reader) -> int {
 }
 
 reader_bounded_data :: proc(r: ^Binary_Reader) -> []byte {
-	return rng1_slice(r.bounds, r.data)
+	return B.rng1_slice(r.bounds, r.data)
 }
 
 reader_data_left :: proc(r: ^Binary_Reader) -> int {
-	return len(rng1_slice(r.bounds, r.data)) - reader_relative_pos(r)
+	return len(B.rng1_slice(r.bounds, r.data)) - reader_relative_pos(r)
 }
 
 read_bytes :: proc(r: ^Binary_Reader, count: int) -> (bytes: []byte, ok: bool) {
 	if count <= reader_data_left(r) {
 		pos   := reader_relative_pos(r)
-		bytes  = rng1_slice(r.bounds, r.data)[pos:pos+count]
+		bytes  = B.rng1_slice(r.bounds, r.data)[pos:pos+count]
 		ok     = true
 
 		r.pos += count
@@ -143,7 +146,7 @@ read_u32 :: proc(r: ^Binary_Reader) -> (u32, bool) { return read_t(r, u32) }
 read_byte :: proc(r: ^Binary_Reader) -> (result: u8, ok: bool) {
 	if 1 <= reader_data_left(r) {
 		pos    := reader_relative_pos(r)
-		result  = rng1_slice(r.bounds, r.data)[pos]
+		result  = B.rng1_slice(r.bounds, r.data)[pos]
 		ok      = true
 		r.pos  += 1
 	} else {
@@ -157,7 +160,7 @@ read_uXX_leb :: proc(r: ^Binary_Reader, $T: typeid) -> (value: T, ok: bool) wher
 	MAX_BYTES :: int(intrinsics.constant_ceil(f64(size_of(value) * 8) / 7))
 	MAX       :: u128(max(T))
 
-	value_u128, size, err := varint.decode_uleb128_buffer(rng1_slice(r.bounds, r.data)[reader_relative_pos(r):])
+	value_u128, size, err := varint.decode_uleb128_buffer(B.rng1_slice(r.bounds, r.data)[reader_relative_pos(r):])
 	switch err {
 	case .None:
 		// validate LEB u32 size
@@ -190,7 +193,7 @@ read_vec :: proc(r: ^Binary_Reader, parse_proc: proc(r: ^Binary_Reader) -> ($T, 
 	size: u32
 	size, ok = read_u32_leb(r)
 	if ok {
-		data, _ = virtual.make(&r.m.arena, []T, size)
+		data = B.arena_push_make(r.m.arena, []T, size)
 
 		for i in 0..<size {
 			data[i], ok = parse_proc(r)
@@ -279,7 +282,7 @@ read_section :: proc(r: ^Binary_Reader) -> (section: Section, ok: bool) {
 		if u8(section.kind) <= u8(max(Section_Kind)) {
 			section.size, ok = as(int, read_u32_leb(r))
 			if ok {
-				reader_bounds_guard(r, rng1(r.pos, r.pos+section.size))
+				reader_bounds_guard(r, B.rng1(r.pos, r.pos+section.size))
 
 				switch section.kind {
 				case .Custom: // do nothing
@@ -306,63 +309,124 @@ read_section :: proc(r: ^Binary_Reader) -> (section: Section, ok: bool) {
 }
 
 read_sections_into_module :: proc(r: ^Binary_Reader) -> (ok: bool) {
-	ok = true
-
-	for r.pos < len(r.data) {
-		section: Section
-		section, ok = read_section(r)
-		if ok {
-			node, _ := virtual.new(&r.m.arena, Section_Node)
-			node.section = section
-			list_push(&r.m.sections, node)
-		} else {
-			break
-		}
-	}
-
+	// ok = true
+	//
+	// for r.pos < len(r.data) {
+	// 	section: Section
+	// 	section, ok = read_section(r)
+	// 	if ok {
+	// 		node := B.arena_push(r.m.arena, Section_Node)
+	// 		node.section = section
+	// 		list_push(&r.m.sections, node)
+	// 	} else {
+	// 		break
+	// 	}
+	// }
+	//
+	// return
 	return
 }
 
 read_module :: proc(r: ^Binary_Reader) -> (ok: bool) {
-	r.m, _   = virtual.arena_growing_bootstrap_new(Module, "arena")
-	r.bounds = rng1(0, len(r.data))
+	if B.lane_idx() == 0 {
+		r.m        = B.arena_bootstrap_new(Module, "arena")
+		r.m.arenas = B.arena_push_make(r.m.arena, []^B.Arena, B.lane_count())
+		r.bounds   = B.rng1(0, len(r.data))
 
-	// read magic number
-	magic: u32
-	magic, ok = read_u32(r)
-	if ok {
-		if magic == MAGIC {
-
-			// read version number
-			version: u32
-			version, ok = read_u32(r)
-			if ok {
-				if version == VERSION {
-					// read sections
-					ok = read_sections_into_module(r)
-
-					if ok {
-						fmt.printfln("found module with version %v", version)
-						for section_node := r.m.sections.first; section_node != nil; section_node = section_node.next {
-							section := section_node.section
-							fmt.printfln("found section of type %v", section)
-						}
-					}
-				} else {
-					ok = false
-					errorf(r, r.pos-size_of(version), "unsupported WASM version %v, currently only WASM 1.0 is supported", version)
-				}
+		// read magic number
+		magic: u32
+		magic, ok = read_u32(r)
+		if ok {
+			if magic == MAGIC {
+				ok = true
+			} else {
+				ok = false
+				errorf(r, r.pos-size_of(magic), "invalid magic number %v, expected %v", magic, MAGIC)
 			}
-		} else {
-			ok = false
-			errorf(r, r.pos-size_of(magic), "invalid magic number %v, expected %v", magic, MAGIC)
+		}
+
+		// read version number
+		if ok {
+			r.m.version, ok = read_u32(r)
+			if r.m.version == VERSION {
+				ok = true
+			} else {
+				ok = false
+				errorf(r, r.pos-size_of(u32), "unsupported WASM version %v, currently only WASM 1.0 is supported", r.m.version)
+			}
+		}
+
+		// fast-collect all sections for parallel processing
+		section_list: Section_List
+		if ok {
+			for r.pos < len(r.data) {
+				section: Section
+
+				section.kind, ok = read_t(r, Section_Kind)
+				if !ok {
+					break
+				}
+
+				ok = u8(section.kind) <= u8(max(Section_Kind))
+				if !ok {
+					break
+				}
+
+				section.size, ok = as(int, read_u32_leb(r))
+				if !ok {
+					break
+				}
+
+				node         := B.arena_push(r.m.arena, Section_Node)
+				node.section  = section
+				list_push(&section_list, node)
+			}
+		}
+
+		// collect all sections into a linear array
+		if ok {
+			r.m.sections = B.arena_push_make(r.m.arena, []Section, section_list.count)
+
+			i := 0
+			for current := section_list.first; current != nil; current = current.next {
+				r.m.sections[i] = current.section
+
+				i += 1
+			}
+		}
+	}
+
+	B.lane_sync_value(&ok, 0)
+
+	if !ok {
+		return
+	}
+
+	r.m.arenas[B.lane_idx()] = B.arena_alloc()
+	B.lane_sync()
+
+	section_list: Section_List
+
+	// read sections
+	ok = read_sections_into_module(r)
+
+	if ok {
+		fmt.printfln("found module with version %v", r.m.version)
+		for section_node := section_list.first; section_node != nil; section_node = section_node.next {
+			section := section_node.section
+			fmt.printfln("found section of type %q: %v", section.kind, section)
 		}
 	}
 
 	return
 }
 
+read_entry_point :: proc() {}
+
 main :: proc() {
+	B.inst_begin_profile()
+	defer B.inst_end_profile()
+
 	Cmd :: struct {
 		input_module: ^os.File `args:"pos=0,required"`,
 	}
