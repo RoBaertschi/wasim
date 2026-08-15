@@ -30,9 +30,6 @@ Read_Ctx :: struct {
 
 	file: string,
 	errors: int,
-}
-
-Binary_Reader :: struct {
 	m: ^Module,
 }
 
@@ -209,14 +206,14 @@ as :: proc($T: typeid, a: $A, ok: bool) -> (T, bool) {
 	return (T)(a), ok
 }
 
-read_vec :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx, parse_proc: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> ($T, bool)) -> (data: []T, ok: bool) {
+read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool)) -> (data: []T, ok: bool) {
 	size: u32
 	size, ok = read_u32_leb(ctx)
 	if ok {
-		data = B.arena_push_make(r.m.arena, []T, size)
+		data = B.arena_push_make(ctx.m.arena, []T, size)
 
 		for i in 0..<size {
-			data[i], ok = parse_proc(r, ctx)
+			data[i], ok = parse_proc(ctx)
 			if !ok {
 				break
 			}
@@ -241,20 +238,16 @@ read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
 	return
 }
 
-read_func_type :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
+read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 	identify_byte: byte
 	identify_byte, ok = read_byte(ctx)
 	if ok {
 		FUNCTION_TYPE_IDENTIFY_BYTE :: 0x60
 
 		if identify_byte == FUNCTION_TYPE_IDENTIFY_BYTE {
-			type.args, ok = read_vec(r, ctx, proc(_: ^Binary_Reader, ctx: ^Read_Ctx) -> (Value_Type, bool) {
-				return read_value_type(ctx)
-			})
+			type.args, ok = read_vec(ctx, read_value_type)
 			if ok {
-				type.rets, ok = read_vec(r, ctx, proc(_: ^Binary_Reader, ctx: ^Read_Ctx) -> (Value_Type, bool) {
-					return read_value_type(ctx)
-				})
+				type.rets, ok = read_vec(ctx, read_value_type)
 			}
 		} else {
 			ok = false
@@ -285,24 +278,22 @@ read_code :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
 	return
 }
 
-read_type_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (types: []Function_Type, ok: bool) {
-	types, ok = read_vec(r, ctx, read_func_type)
+read_type_section :: proc(ctx: ^Read_Ctx) -> (types: []Function_Type, ok: bool) {
+	types, ok = read_vec(ctx, read_func_type)
 	return
 }
 
-read_func_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
-	funcs, ok = read_vec(r, ctx, proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (type_index: Type_Index, ok: bool) { return as(Type_Index, read_u32_leb(ctx)) })
+read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
+	funcs, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (type_index: Type_Index, ok: bool) { return as(Type_Index, read_u32_leb(ctx)) })
 	return
 }
 
-read_code_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
-	codes, ok = read_vec(r, ctx, proc(_: ^Binary_Reader, ctx: ^Read_Ctx) -> (Code, bool) {
-		return read_code(ctx)
-	})
+read_code_section :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
+	codes, ok = read_vec(ctx, read_code)
 	return
 }
 
-read_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (section: Section, ok: bool) {
+read_section :: proc(ctx: ^Read_Ctx) -> (section: Section, ok: bool) {
 	section.kind, ok = read_t(ctx, Section_Kind)
 	if ok {
 		if u8(section.kind) <= u8(max(Section_Kind)) {
@@ -312,16 +303,16 @@ read_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (section: Section, ok
 
 				switch section.kind {
 				case .Custom: // do nothing
-				case .Type:     section.types, ok = read_type_section(r, ctx)
+				case .Type:     section.types, ok = read_type_section(ctx)
 				case .Import:   // unimplemented()
-				case .Function: section.funcs, ok = read_func_section(r, ctx)
+				case .Function: section.funcs, ok = read_func_section(ctx)
 				case .Table:    // unimplemented()
 				case .Memory:   // unimplemented()
 				case .Global:   // unimplemented()
 				case .Export:   // unimplemented()
 				case .Start:    // unimplemented()
 				case .Element:  // unimplemented()
-				case .Code:     section.codes, ok = read_code_section(r, ctx)
+				case .Code:     section.codes, ok = read_code_section(ctx)
 				case .Data:     // unimplemented()
 				}
 			}
@@ -334,16 +325,16 @@ read_section :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (section: Section, ok
 	return
 }
 
-read_sections_into_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
+read_sections_into_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 	// ok = true
 	//
 	// for ctx.curr < len(ctx.data) {
 	// 	section: Section
-	// 	section, ok = read_section(r, ctx)
+	// 	section, ok = read_section(ctx)
 	// 	if ok {
-	// 		node := B.arena_push(r.m.arena, Section_Node)
+	// 		node := B.arena_push(ctx.m.arena, Section_Node)
 	// 		node.section = section
-	// 		list_push(&r.m.sections, node)
+	// 		list_push(&ctx.m.sections, node)
 	// 	} else {
 	// 		break
 	// 	}
@@ -353,10 +344,10 @@ read_sections_into_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: boo
 	return
 }
 
-read_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
+read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 	if B.lane_idx() == 0 {
-		r.m        = B.arena_bootstrap_new(Module, "arena")
-		r.m.arenas = B.arena_push_make(r.m.arena, []^B.Arena, B.lane_count())
+		ctx.m        = B.arena_bootstrap_new(Module, "arena")
+		ctx.m.arenas = B.arena_push_make(ctx.m.arena, []^B.Arena, B.lane_count())
 
 		// read magic number
 		magic: u32
@@ -372,12 +363,12 @@ read_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
 
 		// read version number
 		if ok {
-			r.m.version, ok = read_u32(ctx)
-			if r.m.version == VERSION {
+			ctx.m.version, ok = read_u32(ctx)
+			if ctx.m.version == VERSION {
 				ok = true
 			} else {
 				ok = false
-				errorf(ctx, ctx.base+ctx.curr-size_of(u32), "unsupported WASM version %v, currently only WASM 1.0 is supported", r.m.version)
+				errorf(ctx, ctx.base+ctx.curr-size_of(u32), "unsupported WASM version %v, currently only WASM 1.0 is supported", ctx.m.version)
 			}
 		}
 
@@ -402,7 +393,7 @@ read_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
 					break
 				}
 
-				node         := B.arena_push(r.m.arena, Section_Node)
+				node         := B.arena_push(ctx.m.arena, Section_Node)
 				node.section  = section
 				list_push(&section_list, node)
 			}
@@ -410,11 +401,11 @@ read_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
 
 		// collect all sections into a linear array
 		if ok {
-			r.m.sections = B.arena_push_make(r.m.arena, []Section, section_list.count)
+			ctx.m.sections = B.arena_push_make(ctx.m.arena, []Section, section_list.count)
 
 			i := 0
 			for current := section_list.first; current != nil; current = current.next {
-				r.m.sections[i] = current.section
+				ctx.m.sections[i] = current.section
 
 				i += 1
 			}
@@ -427,16 +418,16 @@ read_module :: proc(r: ^Binary_Reader, ctx: ^Read_Ctx) -> (ok: bool) {
 		return
 	}
 
-	r.m.arenas[B.lane_idx()] = B.arena_alloc()
+	ctx.m.arenas[B.lane_idx()] = B.arena_alloc()
 	B.lane_sync()
 
 	section_list: Section_List
 
 	// read sections
-	ok = read_sections_into_module(r, ctx)
+	ok = read_sections_into_module(ctx)
 
 	if ok {
-		fmt.printfln("found module with version %v", r.m.version)
+		fmt.printfln("found module with version %v", ctx.m.version)
 		for section_node := section_list.first; section_node != nil; section_node = section_node.next {
 			section := section_node.section
 			fmt.printfln("found section of type %q: %v", section.kind, section)
@@ -462,13 +453,12 @@ main :: proc() {
 
 	data, err := os.read_entire_file(cmd.input_module, context.temp_allocator)
 	if err == nil {
-		r := Binary_Reader {}
 		ctx := Read_Ctx {
 			data = data,
 			file = os.name(cmd.input_module),
 		}
 
-		read_module(&r, &ctx)
+		read_module(&ctx)
 	} else {
 		fmt.eprintfln("could not read file %q: %v", os.name(cmd.input_module), err)
 	}
