@@ -1,26 +1,35 @@
 package wasim_base
 
+import "core:mem"
 import "core:sync"
 import "base:runtime"
 
+Lane_Ctx :: struct {
+	index:   int,
+	count:   int,
+	barrier: ^sync.Barrier,
+	shared_memory: ^u64,
+}
+
 Thread_Ctx :: struct {
-	idx:          int,
-	thread_count: int,
-	barrier:      ^sync.Barrier,
-	perm_arena:   ^Arena,
-	temp_arenas:  [MAX_TEMP_ARENA_COUNT]^Arena,
+	lane_ctx:    Lane_Ctx,
+	temp_arenas: [MAX_TEMP_ARENA_COUNT]^Arena,
+}
+
+lane_select_ctx :: proc(ctx: Lane_Ctx) {
+	thread_ctx.lane_ctx = ctx
 }
 
 lane_idx :: proc() -> int {
-	return thread_ctx.idx
+	return thread_ctx.lane_ctx.index
 }
 
 lane_count :: proc() -> int {
-	return thread_ctx.thread_count
+	return thread_ctx.lane_ctx.count
 }
 
 lane_sync :: proc() {
-	sync.barrier_wait(thread_ctx.barrier)
+	sync.barrier_wait(thread_ctx.lane_ctx.barrier)
 }
 
 lane_range :: proc(values_count: int) -> (result: Rng1(int)) {
@@ -28,18 +37,15 @@ lane_range :: proc(values_count: int) -> (result: Rng1(int)) {
 	return
 }
 
-lane_sync_value :: proc(ptr: ^$T, src_lane_idx: int) {
-	@static
-	value: T
-
+lane_sync_value :: proc(ptr: ^$T, src_lane_idx: int) where size_of(T) <= size_of(u64) {
 	if lane_idx() == src_lane_idx {
-		value = ptr^
+		mem.copy(thread_ctx.lane_ctx.shared_memory, ptr, size_of(T))
 	}
 
 	lane_sync()
 
 	if lane_idx() != src_lane_idx {
-		ptr^ = value
+		mem.copy(ptr, thread_ctx.lane_ctx.shared_memory, size_of(T))
 	}
 
 	lane_sync()
@@ -53,13 +59,12 @@ thread_distribute_values :: proc(values_count, thread_idx, thread_count: int) ->
 	leftover_values_count := values_count % thread_count
 	thread_has_leftover   := thread_idx   < leftover_values_count
 
-	leftovers_before_this_thread_idx := thread_idx if thread_has_leftover \
-	else leftover_values_count
+	leftovers_before_this_thread_idx := thread_idx if thread_has_leftover else leftover_values_count
 
-		thread_first_value_idx := values_per_thread * thread_idx + leftovers_before_this_thread_idx
-		thread_opl_value_idx   := thread_first_value_idx + values_per_thread + (thread_has_leftover ? 1
-			: 0)
-		return thread_first_value_idx, thread_opl_value_idx
+	thread_first_value_idx := values_per_thread * thread_idx + leftovers_before_this_thread_idx
+	thread_opl_value_idx   := thread_first_value_idx + values_per_thread + (thread_has_leftover ? 1
+		: 0)
+	return thread_first_value_idx, thread_opl_value_idx
 }
 
 @(private="file")

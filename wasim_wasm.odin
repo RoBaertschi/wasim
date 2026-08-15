@@ -1,5 +1,9 @@
 package wasim
 
+import "core:sys/info"
+import "core:thread"
+import "core:sync"
+import "base:runtime"
 import "core:os"
 import "core:fmt"
 import "core:flags"
@@ -15,12 +19,22 @@ VERSION :: u32(1)
 Byte_Range :: B.Rng1(int)
 
 Diagnostic :: struct {
-	next:  ^Diagnostic,
 	error: string,
 	range: Byte_Range,
 }
 
-Diagnostic_List :: distinct List(Diagnostic)
+Diagnostic_Node :: struct {
+	next: ^Diagnostic_Node,
+	diag: Diagnostic,
+}
+
+Diagnostic_List :: distinct List(Diagnostic_Node)
+
+diag_list_push :: proc(a: ^B.Arena, l: ^Diagnostic_List, diag: Diagnostic) {
+	node      := B.arena_push(a, Diagnostic_Node)
+	node.diag  = diag
+	list_push(l, node)
+}
 
 Read_Ctx :: struct {
 	base: int,    // base offset into file
@@ -33,9 +47,18 @@ Read_Ctx :: struct {
 	m: ^Module,
 }
 
+reader_set_scope :: proc(ctx: ^Read_Ctx, base: int, data: []byte) {
+	ctx.base = base
+	ctx.curr = 0
+	ctx.data = data
+}
+
 reader_push_data :: proc(ctx: ^Read_Ctx, count: int) -> (old_base, resume_curr: int, old_data: []byte, ok: bool) {
-	if count < 0 || count > reader_data_left(ctx) {
-		errorf(ctx, ctx.base+ctx.curr, "missing bytes")
+	start     := reader_anchor(ctx)
+	data_left := reader_data_left(ctx)
+
+	if count < 0 || data_left < count {
+		errorf(ctx, B.rng1(start, start+data_left), "missing %v bytes", count-data_left)
 		return
 	}
 
@@ -103,7 +126,7 @@ Code :: struct {
 Section :: struct {
 	kind:  Section_Kind,
 	pos:   int,
-	size:  int,
+	data:  []byte,
 	types: []Function_Type,
 	funcs: []Type_Index,
 	codes: []Code,
@@ -123,11 +146,37 @@ Module :: struct {
 	sections: []Section,
 }
 
-errorf :: proc(ctx: ^Read_Ctx, pos: int, format: string, args: ..any) {
+reader_arena :: proc(ctx: ^Read_Ctx) -> ^B.Arena {
+	return ctx.m.arenas[B.lane_idx()]
+}
+
+reader_allocator :: proc(ctx: ^Read_Ctx) -> runtime.Allocator {
+	return B.arena_allocator(reader_arena(ctx))
+}
+
+errorf :: proc(ctx: ^Read_Ctx, range: Byte_Range, format: string, args: ..any) {
+	diag := Diagnostic {
+		error = fmt.aprintf(format, ..args, allocator = reader_allocator(ctx)),
+		range = range,
+	}
+
+	diag_list_push(reader_arena(ctx), &ctx.digs, diag)
+
 	ctx.errors += 1
 
-	fmt.printf("%v:%v: WASM Binary Error: ", ctx.file, pos)
+	fmt.printf("%v:%v: WASM Binary Error: ", ctx.file, range.start)
 	fmt.printfln(format, ..args)
+}
+
+reader_anchor :: proc(ctx: ^Read_Ctx) -> int {
+	return ctx.base + ctx.curr
+}
+
+reader_anchor_range :: proc(ctx: ^Read_Ctx, anchor: int) -> (result: Byte_Range) {
+	result.start = anchor
+	result.end   = reader_anchor(ctx)
+	assert(result.start <= result.end)
+	return
 }
 
 reader_data_left :: proc(ctx: ^Read_Ctx) -> int {
@@ -135,14 +184,17 @@ reader_data_left :: proc(ctx: ^Read_Ctx) -> int {
 }
 
 read_bytes :: proc(ctx: ^Read_Ctx, count: int) -> (bytes: []byte, ok: bool) {
-	if count <= reader_data_left(ctx) {
+	start     := reader_anchor(ctx)
+	data_left := reader_data_left(ctx)
+
+	if count <= data_left {
 		pos   := ctx.curr
 		bytes  = ctx.data[pos:pos+count]
 		ok     = true
 
 		ctx.curr += count
 	} else {
-		errorf(ctx, ctx.base+ctx.curr, "missing bytes")
+		errorf(ctx, B.rng1(start, start+data_left), "missing %v bytes", count-data_left)
 	}
 
 	return
@@ -162,12 +214,14 @@ read_t :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) {
 read_u32 :: proc(ctx: ^Read_Ctx) -> (u32, bool) { return read_t(ctx, u32) }
 
 read_byte :: proc(ctx: ^Read_Ctx) -> (result: u8, ok: bool) {
+	start := reader_anchor(ctx)
+
 	if 1 <= reader_data_left(ctx) {
 		result    = ctx.data[ctx.curr]
 		ok        = true
 		ctx.curr += 1
 	} else {
-		errorf(ctx, ctx.base+ctx.curr, "missing byte")
+		errorf(ctx, reader_anchor_range(ctx, start), "missing byte")
 	}
 
 	return
@@ -176,6 +230,8 @@ read_byte :: proc(ctx: ^Read_Ctx) -> (result: u8, ok: bool) {
 read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where intrinsics.type_is_integer(T), intrinsics.type_is_unsigned(T) {
 	MAX_BYTES :: int(intrinsics.constant_ceil(f64(size_of(value) * 8) / 7))
 	MAX       :: u128(max(T))
+
+	start := reader_anchor(ctx)
 
 	value_u128, size, err := varint.decode_uleb128_buffer(ctx.data[ctx.curr:])
 	switch err {
@@ -188,13 +244,13 @@ read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where i
 				value  = T(value_u128)
 				ctx.curr += size
 			} else {
-				errorf(ctx, ctx.base+ctx.curr, "LEB %[0]v has value to large to fit into a %[0]v: %v <= %v", typeid_of(T), value_u128, MAX)
+				errorf(ctx, reader_anchor_range(ctx, start), "LEB %[0]v has value to large to fit into a %[0]v: %v <= %v", typeid_of(T), value_u128, MAX)
 			}
 		} else {
-			errorf(ctx, ctx.base+ctx.curr, "LEB has to many bytes for a %v: %v <= %v", typeid_of(T), size, MAX_BYTES)
+			errorf(ctx, reader_anchor_range(ctx, start), "LEB has to many bytes for a %v: %v <= %v", typeid_of(T), size, MAX_BYTES)
 		}
-	case .Buffer_Too_Small: errorf(ctx, ctx.base+ctx.curr, "missing bytes for LEB %v", typeid_of(T))
-	case .Value_Too_Large:  errorf(ctx, ctx.base+ctx.curr, "LEB to large to even fit into a u128")
+	case .Buffer_Too_Small: errorf(ctx, reader_anchor_range(ctx, start), "missing bytes for LEB %v", typeid_of(T))
+	case .Value_Too_Large:  errorf(ctx, reader_anchor_range(ctx, start), "LEB to large to even fit into a u128")
 	}
 
 	return
@@ -224,6 +280,8 @@ read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool))
 }
 
 read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
+	start := reader_anchor(ctx)
+	
 	value_type_byte: byte
 	value_type_byte, ok = read_byte(ctx)
 
@@ -231,7 +289,7 @@ read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
 		if value_type_byte <= byte(max(Value_Type)) {
 			value_type = Value_Type(value_type_byte)
 		} else {
-			errorf(ctx, ctx.base + ctx.curr - 1, "invalid value type %v: %v(0) <= %v(%v)", value_type_byte, min(Value_Type), max(Value_Type), byte(max(Value_Type)))
+			errorf(ctx, reader_anchor_range(ctx, start), "invalid value type %v: %v(0) <= %v(%v)", value_type_byte, min(Value_Type), max(Value_Type), byte(max(Value_Type)))
 		}
 	}
 
@@ -239,6 +297,8 @@ read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
 }
 
 read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
+	start := reader_anchor(ctx)
+
 	identify_byte: byte
 	identify_byte, ok = read_byte(ctx)
 	if ok {
@@ -253,7 +313,7 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 			ok = false
 			errorf(
 				ctx,
-				ctx.base + ctx.curr - 1,
+				reader_anchor_range(ctx, start),
 				"expected identifying byte for function, but got unknown one: %v != FUNCTION_TYPE_IDENTIFY_BYTE(%v)",
 				identify_byte,
 				FUNCTION_TYPE_IDENTIFY_BYTE,
@@ -265,13 +325,15 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 }
 
 read_code :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
+	start := reader_anchor(ctx)
+
 	code.size, ok = as(int, read_u32_leb(ctx))
 	if ok {
 		if ctx.curr + code.size <= len(ctx.data) {
 			ctx.curr += code.size
 		} else {
 			ok = false
-			errorf(ctx, ctx.base + ctx.curr, "out of bounds code size, pos(%v) + size(%v) in bounds %v", ctx.base + ctx.curr, code.size, B.rng1(ctx.base, ctx.base+len(ctx.data)))
+			errorf(ctx, reader_anchor_range(ctx, start), "out of bounds code size, pos(%v) + size(%v) in bounds %v", ctx.base + ctx.curr, code.size, B.rng1(ctx.base, ctx.base+len(ctx.data)))
 		}
 	}
 
@@ -290,38 +352,6 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 
 read_code_section :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
 	codes, ok = read_vec(ctx, read_code)
-	return
-}
-
-read_section :: proc(ctx: ^Read_Ctx) -> (section: Section, ok: bool) {
-	section.kind, ok = read_t(ctx, Section_Kind)
-	if ok {
-		if u8(section.kind) <= u8(max(Section_Kind)) {
-			section.size, ok = as(int, read_u32_leb(ctx))
-			if ok {
-				reader_data_guard(ctx, section.size) or_return
-
-				switch section.kind {
-				case .Custom: // do nothing
-				case .Type:     section.types, ok = read_type_section(ctx)
-				case .Import:   // unimplemented()
-				case .Function: section.funcs, ok = read_func_section(ctx)
-				case .Table:    // unimplemented()
-				case .Memory:   // unimplemented()
-				case .Global:   // unimplemented()
-				case .Export:   // unimplemented()
-				case .Start:    // unimplemented()
-				case .Element:  // unimplemented()
-				case .Code:     section.codes, ok = read_code_section(ctx)
-				case .Data:     // unimplemented()
-				}
-			}
-		} else {
-			ok = false
-			errorf(ctx, ctx.base + ctx.curr, "invalid section kind %d, expected 0..=%v", u8(section.kind), u8(max(Section_Kind)))
-		}
-	}
-
 	return
 }
 
@@ -344,10 +374,26 @@ read_sections_into_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 	return
 }
 
-read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
+read_module :: proc(data: []byte, file: string) -> (ok: bool) {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+	ctx  := B.arena_push(temp, Read_Ctx)
+
+	ctx.data = data
+	ctx.file = file
+
 	if B.lane_idx() == 0 {
 		ctx.m        = B.arena_bootstrap_new(Module, "arena")
 		ctx.m.arenas = B.arena_push_make(ctx.m.arena, []^B.Arena, B.lane_count())
+	}
+
+	ctx.m.arenas[B.lane_idx()] = B.arena_alloc(commited = runtime.Kilobyte * 2)
+
+	B.lane_sync_value(&ctx.m, 0)
+
+	code_section := -1
+
+	if B.lane_idx() == 0 {
+		anchor := reader_anchor(ctx)
 
 		// read magic number
 		magic: u32
@@ -357,9 +403,11 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 				ok = true
 			} else {
 				ok = false
-				errorf(ctx, ctx.base+ctx.curr-size_of(magic), "invalid magic number %v, expected %v", magic, MAGIC)
+				errorf(ctx, reader_anchor_range(ctx, anchor), "invalid magic number %v, expected %v", magic, MAGIC)
 			}
 		}
+
+		anchor = reader_anchor(ctx)
 
 		// read version number
 		if ok {
@@ -368,7 +416,7 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 				ok = true
 			} else {
 				ok = false
-				errorf(ctx, ctx.base+ctx.curr-size_of(u32), "unsupported WASM version %v, currently only WASM 1.0 is supported", ctx.m.version)
+				errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported WASM version %v, currently only WASM 1.0 is supported", ctx.m.version)
 			}
 		}
 
@@ -376,7 +424,11 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 		section_list: Section_List
 		if ok {
 			for ctx.curr < len(ctx.data) {
-				section: Section
+				start := reader_anchor(ctx)
+
+				section := Section{
+					pos = ctx.curr,
+				}
 
 				section.kind, ok = read_t(ctx, Section_Kind)
 				if !ok {
@@ -385,10 +437,17 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 
 				ok = u8(section.kind) <= u8(max(Section_Kind))
 				if !ok {
+					errorf(ctx, reader_anchor_range(ctx, start), "invalid section kind %d, expected 0..=%v", u8(section.kind), u8(max(Section_Kind)))
 					break
 				}
 
-				section.size, ok = as(int, read_u32_leb(ctx))
+				size: int
+				size, ok = as(int, read_u32_leb(ctx))
+				if !ok {
+					break
+				}
+
+				section.data, ok = read_bytes(ctx, size)
 				if !ok {
 					break
 				}
@@ -407,6 +466,10 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 			for current := section_list.first; current != nil; current = current.next {
 				ctx.m.sections[i] = current.section
 
+				if current.section.kind == .Code {
+					code_section = i
+				}
+
 				i += 1
 			}
 		}
@@ -418,18 +481,37 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 		return
 	}
 
-	ctx.m.arenas[B.lane_idx()] = B.arena_alloc()
-	B.lane_sync()
+	B.lane_sync_value(&code_section, 0)
 
-	section_list: Section_List
+	m := ctx.m
 
-	// read sections
-	ok = read_sections_into_module(ctx)
+	section_rng := B.lane_range(len(m.sections))
+	for i in section_rng.start..<section_rng.end {
+		section := m.sections[i]
+		defer m.sections[i] = section
 
-	if ok {
-		fmt.printfln("found module with version %v", ctx.m.version)
-		for section_node := section_list.first; section_node != nil; section_node = section_node.next {
-			section := section_node.section
+		reader_set_scope(ctx, section.pos, section.data)
+
+		// we do not care about ok==false, because we will not handle ok but instead look at the diagnostic list
+		switch section.kind {
+		case .Custom: // do nothing
+		case .Type:     section.types, _ = read_type_section(ctx)
+		case .Import:   // unimplemented()
+		case .Function: section.funcs, _ = read_func_section(ctx)
+		case .Table:    // unimplemented()
+		case .Memory:   // unimplemented()
+		case .Global:   // unimplemented()
+		case .Export:   // unimplemented()
+		case .Start:    // unimplemented()
+		case .Element:  // unimplemented()
+		case .Code:     section.codes, _ = read_code_section(ctx) // TODO(robin): split up into multiple units
+		case .Data:     // unimplemented()
+		}
+	}
+
+	if B.lane_idx() == 0 {
+		fmt.printfln("found module with version %v", m.version)
+		for section in m.sections {
 			fmt.printfln("found section of type %q: %v", section.kind, section)
 		}
 	}
@@ -437,7 +519,27 @@ read_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
 	return
 }
 
-read_entry_point :: proc() {}
+Thread_Data :: struct {
+	lane_ctx: B.Lane_Ctx,
+	thread: ^thread.Thread,
+	data: []byte,
+	file: string,
+	done: ^sync.One_Shot_Event,
+}
+
+read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
+	tdata := (^Thread_Data)(t.data)
+
+	B.lane_select_ctx(tdata.lane_ctx)
+
+	B.lane_sync()
+
+	read_module(tdata.data, tdata.file)
+
+	if B.lane_idx() == 0 {
+		sync.one_shot_event_signal(tdata.done)
+	}
+}
 
 main :: proc() {
 	B.inst_begin_profile()
@@ -445,6 +547,7 @@ main :: proc() {
 
 	Cmd :: struct {
 		input_module: ^os.File `args:"pos=0,required"`,
+		thread_count: int,
 	}
 
 	cmd: Cmd
@@ -453,12 +556,48 @@ main :: proc() {
 
 	data, err := os.read_entire_file(cmd.input_module, context.temp_allocator)
 	if err == nil {
-		ctx := Read_Ctx {
-			data = data,
-			file = os.name(cmd.input_module),
+		temp := B.TEMP_ALLOCATOR_GUARD()
+
+		thread_count: int
+		if cmd.thread_count == 0 {
+			// try to infer virtual core count
+			physical_core_count, virtual_core_count, _ := info.cpu_core_count()
+			thread_count = virtual_core_count if virtual_core_count != 0 else physical_core_count
 		}
 
-		read_module(&ctx)
+		thread_count = max(1, cmd.thread_count)
+
+
+		lane_shared_memory: u64
+		barrier: sync.Barrier
+		done_one_shot_event: sync.One_Shot_Event
+		sync.barrier_init(&barrier, thread_count)
+		per_thread_tdata := B.arena_push_make(temp, []Thread_Data, thread_count)
+
+		for &tdata, i in per_thread_tdata {
+			tdata.lane_ctx.index = i
+			tdata.lane_ctx.count = thread_count
+			tdata.lane_ctx.barrier = &barrier
+			tdata.lane_ctx.shared_memory = &lane_shared_memory
+
+			tdata.done = &done_one_shot_event
+
+			tdata.data = data
+			tdata.file = os.name(cmd.input_module)
+
+			tdata.thread = thread.create(read_entry_point, name = fmt.aprintf("wasim_%v", i, allocator = temp))
+			tdata.thread.data = &tdata
+		}
+
+		for tdata in per_thread_tdata {
+			thread.start(tdata.thread)
+		}
+
+		sync.one_shot_event_wait(&done_one_shot_event)
+
+		for tdata in per_thread_tdata {
+			thread.join(tdata.thread)
+		}
 	} else {
 		fmt.eprintfln("could not read file %q: %v", os.name(cmd.input_module), err)
 	}
