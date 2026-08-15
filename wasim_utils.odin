@@ -9,7 +9,7 @@ List :: struct($T: typeid)
 	count:       int,
 }
 
-list_push :: proc(list: ^List($T), node: ^T) {
+list_push :: proc(list: ^$L/List($T), node: ^T) {
 	list.count += 1
 	if intrinsics.unlikely(list.first == nil) {
 		list.first = node
