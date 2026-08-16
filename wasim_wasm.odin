@@ -109,10 +109,10 @@ Section_Kind :: enum byte {
 }
 
 Value_Type :: enum byte {
-	I32,
-	I64,
-	U32,
-	U64,
+	I32 = 0x7F,
+	I64 = 0x7E,
+	U32 = 0x7D,
+	U64 = 0x7C,
 }
 
 Function_Type :: struct {
@@ -122,9 +122,19 @@ Function_Type :: struct {
 
 Type_Index :: distinct u32
 
+Local :: struct {
+	type:   Value_Type,
+	repeat: u32,
+}
+
+Instruction :: struct {}
+
 Code :: struct {
 	pos:  int,
 	data: []byte,
+
+	locals: []Local,
+	expr:   []Instruction,
 }
 
 Section :: struct {
@@ -352,7 +362,7 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 	return
 }
 
-read_code_section :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
+read_code_section_structure :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
 	codes, ok = read_vec(ctx, read_code_structure)
 	return
 }
@@ -373,7 +383,7 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 
 	ctx.m.arenas[B.lane_idx()] = B.arena_alloc(commited = runtime.Kilobyte * 2)
 
-	code_section := -1
+	code_section_index := -1
 
 	if B.lane_idx() == 0 {
 		T.ZoneN("Read Module Header")
@@ -452,7 +462,7 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 				ctx.m.sections[i] = current.section
 
 				if current.section.kind == .Code {
-					code_section = i
+					code_section_index = i
 				}
 
 				i += 1
@@ -466,7 +476,7 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		return
 	}
 
-	B.lane_sync_value(&code_section, 0)
+	B.lane_sync_value(&code_section_index, 0)
 
 	m := ctx.m
 
@@ -491,10 +501,44 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		case .Export:   // unimplemented()
 		case .Start:    // unimplemented()
 		case .Element:  // unimplemented()
-		case .Code:     section.codes, _ = read_code_section(ctx) // TODO(robin): split up into multiple units
+		case .Code:     section.codes, _ = read_code_section_structure(ctx) // TODO(robin): split up into multiple units
 		case .Data:     // unimplemented()
 		}
 	}
+
+	B.lane_sync()
+
+	if 0 <= code_section_index {
+		code_section := &ctx.m.sections[code_section_index]
+		code_rng     := B.lane_range(len(code_section.codes))
+		for i in code_rng.start..<code_rng.end {
+			code := code_section.codes[i]
+			reader_set_scope(ctx, code.pos, code.data)
+
+			code.locals, ok = read_vec(
+				ctx,
+				proc(ctx: ^Read_Ctx) -> (local: Local, ok: bool) {
+					local.repeat = read_u32_leb(ctx) or_return
+					local.type   = read_value_type(ctx) or_return
+					return
+				},
+			)
+
+			if ok {
+				anchor := reader_anchor(ctx)
+				end_byte: byte
+				end_byte, ok = read_byte(ctx)
+
+				if ok {
+					if end_byte != 0x0B {
+						errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported instruction starting with byte %h", end_byte)
+					}
+				}
+			}
+		}
+	}
+
+	B.lane_sync()
 
 	if B.lane_idx() == 0 {
 		fmt.printfln("found module with version %v", m.version)
@@ -502,6 +546,8 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 			fmt.printfln("found section of type %q: %v", section.kind, section)
 		}
 	}
+
+	B.lane_sync()
 
 	return
 }
