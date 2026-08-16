@@ -1,11 +1,11 @@
 package wasim
 
-import "core:strings"
 import "core:os"
 import "core:fmt"
 import "core:sync"
 import "core:flags"
 import "core:thread"
+import "core:strings"
 import "core:sys/info"
 import "core:encoding/varint"
 
@@ -127,7 +127,211 @@ Local :: struct {
 	repeat: u32,
 }
 
-Instruction :: struct {}
+Instruction_Opcode :: enum u8 {
+	// §5.4.1 Control Instructions
+	Unreachable   = 0x00,
+	Nop           = 0x01,
+	Block         = 0x02,
+	Loop          = 0x03,
+	If            = 0x04, // NOTE: else is optional
+	Br            = 0x0C,
+	Br_If         = 0x0E,
+	Return        = 0x0F,
+	Call          = 0x10,
+	Call_Indirect = 0x11,
+
+	// §5.4.2 Parametric Instructions
+	Drop   = 0x1A,
+	Select = 0x1B,
+
+	// §5.4.3 Variable Instructions
+	Local_Get  = 0x20,
+	Local_Set  = 0x21,
+	Local_Tee  = 0x22,
+	Global_Get = 0x23,
+	Global_Set = 0x24,
+
+	// §5.4.4 Memory Instructions
+	I32_Load = 0x28,
+	I64_Load = 0x29,
+	F32_Load = 0x2A,
+	F64_Load = 0x2B,
+
+	I32_Load8_s  = 0x2C,
+	I32_Load8_u  = 0x2D,
+	I32_Load16_s = 0x2E,
+	I32_Load16_u = 0x2F,
+
+	I64_Load8_s  = 0x30,
+	I64_Load8_u  = 0x31,
+	I64_Load16_s = 0x32,
+	I64_Load16_u = 0x33,
+	I64_Load32_s = 0x34,
+	I64_Load32_u = 0x35,
+
+	I32_Store = 0x36,
+	I64_Store = 0x37,
+	F32_Store = 0x38,
+	F64_Store = 0x39,
+
+	I32_Store8  = 0x3A,
+	I32_Store16 = 0x3B,
+
+	I64_Store8  = 0x3C,
+	I64_Store16 = 0x3D,
+	I64_Store32 = 0x3E,
+
+	Memory_Size = 0x3F,
+	Memory_Grow = 0x40,
+
+	// §5.4.5 Numeric Instructions
+	I32_Const = 0x41,
+	I64_Const = 0x42,
+	F32_Const = 0x43,
+	F64_Const = 0x44,
+
+	I32_Eqz  = 0x45,
+	I32_Eq   = 0x46,
+	I32_Ne   = 0x47,
+	I32_Lt_s = 0x48,
+	I32_Lt_u = 0x49,
+	I32_Gt_s = 0x4A,
+	I32_Gt_u = 0x4B,
+	I32_Le_s = 0x4C,
+	I32_Le_u = 0x4D,
+	I32_Ge_s = 0x4E,
+	I32_Ge_u = 0x4F,
+
+	I64_Eqz  = 0x50,
+	I64_Eq   = 0x51,
+	I64_Ne   = 0x52,
+	I64_Lt_s = 0x53,
+	I64_Lt_u = 0x54,
+	I64_Gt_s = 0x55,
+	I64_Gt_u = 0x56,
+	I64_Le_s = 0x57,
+	I64_Le_u = 0x58,
+	I64_Ge_s = 0x59,
+	I64_Ge_u = 0x5A,
+
+	F32_Eq = 0x5B,
+	F32_Ne = 0x5C,
+	F32_Lt = 0x5D,
+	F32_Gt = 0x5E,
+	F32_Le = 0x5F,
+	F32_Ge = 0x60,
+
+	F64_Eq = 0x61,
+	F64_Ne = 0x62,
+	F64_Lt = 0x63,
+	F64_Gt = 0x64,
+	F64_Le = 0x65,
+	F64_Ge = 0x66,
+
+	I32_Clz    = 0x67,
+	I32_Ctz    = 0x68,
+	I32_Popcnt = 0x69,
+	I32_Add    = 0x6A,
+	I32_Sub    = 0x6B,
+	I32_Mul    = 0x6C,
+	I32_Div_s  = 0x6D,
+	I32_Div_u  = 0x6E,
+	I32_Rem_s  = 0x6F,
+	I32_Rem_u  = 0x70,
+	I32_And    = 0x71,
+	I32_Or     = 0x72,
+	I32_Xor    = 0x73,
+	I32_Shl    = 0x74,
+	I32_Shr_s  = 0x75,
+	I32_Shr_u  = 0x76,
+	I32_Rotl   = 0x77,
+	I32_Rotr   = 0x78,
+
+	I64_Clz    = 0x79,
+	I64_Ctz    = 0x7A,
+	I64_Popcnt = 0x7B,
+	I64_Add    = 0x7C,
+	I64_Sub    = 0x7D,
+	I64_Mul    = 0x7E,
+	I64_Div_s  = 0x7F,
+	I64_Div_u  = 0x80,
+	I64_Rem_s  = 0x81,
+	I64_Rem_u  = 0x82,
+	I64_And    = 0x83,
+	I64_Or     = 0x84,
+	I64_Xor    = 0x85,
+	I64_Shl    = 0x86,
+	I64_Shr_s  = 0x87,
+	I64_Shr_u  = 0x88,
+	I64_Rotl   = 0x89,
+	I64_Rotr   = 0x8A,
+
+	F32_Abs      = 0x8B,
+	F32_Neg      = 0x8C,
+	F32_Ceil     = 0x8D,
+	F32_Floor    = 0x8E,
+	F32_Trunc    = 0x8F,
+	F32_Nearest  = 0x90,
+	F32_Sqrt     = 0x91,
+	F32_Add      = 0x92,
+	F32_Sub      = 0x93,
+	F32_Mul      = 0x94,
+	F32_Div      = 0x95,
+	F32_Min      = 0x96,
+	F32_Max      = 0x97,
+	F32_Copysign = 0x98,
+
+	F64_Abs      = 0x99,
+	F64_Neg      = 0x9A,
+	F64_Ceil     = 0x9B,
+	F64_Floor    = 0x9C,
+	F64_Trunc    = 0x9D,
+	F64_Nearest  = 0x9E,
+	F64_Sqrt     = 0x9F,
+	F64_Add      = 0xA0,
+	F64_Sub      = 0xA1,
+	F64_Mul      = 0xA2,
+	F64_Div      = 0xA3,
+	F64_Min      = 0xA4,
+	F64_Max      = 0xA5,
+	F64_Copysign = 0xA6,
+
+	I32_Wrap_I64        = 0xA7,
+	I32_Trunc_F32_s     = 0xA8,
+	I32_Trunc_F32_u     = 0xA9,
+	I32_Trunc_F64_s     = 0xAA,
+	I32_Trunc_F64_u     = 0xAB,
+	I64_Extend_I32_s    = 0xAC,
+	I64_Extend_I32_u    = 0xAD,
+	I64_Trunc_F32_s     = 0xAE,
+	I64_Trunc_F32_u     = 0xAF,
+	I64_Trunc_F64_s     = 0xB0,
+	I64_Trunc_F64_u     = 0xB1,
+	F32_Convert_I32_s   = 0xB2,
+	F32_Convert_I32_u   = 0xB3,
+	F32_Convert_I64_s   = 0xB4,
+	F32_Convert_I64_u   = 0xB5,
+	F32_Demote_F64      = 0xB6,
+	F64_Convert_I32_s   = 0xB7,
+	F64_Convert_I32_u   = 0xB8,
+	F64_Convert_I64_s   = 0xB9,
+	F64_Convert_I64_u   = 0xBA,
+	F64_Promote_F32     = 0xBB,
+	I32_Reinterpret_F32 = 0xBC,
+	I64_Reinterpret_F64 = 0xBD,
+	F32_Reinterpret_I32 = 0xBE,
+	F64_Reinterpret_I64 = 0xBF,
+
+	// Other
+	End = 0x0B,
+}
+
+Instruction :: struct {
+	opcode: Instruction_Opcode,
+	// this store extra data, either inline or externally in an arena
+	// it depends on the instruction, where this data is
+	extra:  u32,
+}
 
 Code :: struct {
 	pos:  int,
@@ -137,13 +341,27 @@ Code :: struct {
 	expr:   []Instruction,
 }
 
+Export_Kind :: enum u8 {
+	Func,
+	Table,
+	Mem,
+	Global,
+}
+
+Export :: struct {
+	kind: Export_Kind,
+	name: string,
+	index: u32,
+}
+
 Section :: struct {
-	kind:  Section_Kind,
-	pos:   int,
-	data:  []byte,
-	types: []Function_Type,
-	funcs: []Type_Index,
-	codes: []Code,
+	kind:      Section_Kind,
+	pos:       int,
+	data:      []byte,
+	types:     []Function_Type,
+	functions: []Type_Index,
+	exports:   []Export,
+	codes:     []Code,
 }
 
 Section_Node :: struct {
@@ -295,6 +513,18 @@ read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool))
 	return
 }
 
+read_name :: proc(ctx: ^Read_Ctx) -> (s: string, ok: bool) {
+	size: u32
+	size, ok = read_u32_leb(ctx)
+	if ok {
+		bytes: []byte
+		bytes, ok = read_bytes(ctx, int(size))
+		s = string(bytes)
+	}
+
+	return
+}
+
 read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
 	start := reader_anchor(ctx)
 	
@@ -340,6 +570,23 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 	return
 }
 
+read_export :: proc(ctx: ^Read_Ctx) -> (export: Export, ok: bool) {
+	export.name, ok = read_name(ctx)
+	if ok {
+		anchor := reader_anchor(ctx)
+		kind_byte: u8
+		kind_byte, ok = read_byte(ctx)
+		if kind_byte <= byte(max(Export_Kind)) {
+			export.kind = Export_Kind(kind_byte)
+
+			export.index, ok = read_u32_leb(ctx)
+		} else {
+			errorf(ctx, reader_anchor_range(ctx, anchor), "invalid export kind %v: %v(0) <= %v(%v)", kind_byte, min(Export_Kind), max(Export_Kind), byte(max(Export_Kind)))
+		}
+	}
+	return
+}
+
 // Only reads the size of the code, not it's actual content
 read_code_structure :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
 	code.pos = reader_absolute_pos(ctx)
@@ -362,8 +609,57 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 	return
 }
 
+read_export_section :: proc(ctx: ^Read_Ctx) -> (exports: []Export, ok: bool) {
+	exports, ok = read_vec(ctx, read_export)
+	return
+}
+
 read_code_section_structure :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
 	codes, ok = read_vec(ctx, read_code_structure)
+	return
+}
+
+read_expr :: proc(ctx: ^Read_Ctx) -> (insts: []Instruction, ok: bool) {
+	insts_dynamic_array := make([dynamic]Instruction, allocator = reader_allocator(ctx))
+
+	read_instruction :: proc(ctx: ^Read_Ctx) -> (inst: Instruction, ok: bool) {
+		anchor := reader_anchor(ctx)
+
+		opcode: u8
+		opcode, ok = read_byte(ctx)
+
+		if ok {
+			inst.opcode = Instruction_Opcode(opcode)
+			// TODO(robin): implement all instructions
+			#partial switch inst.opcode {
+			case .End:
+			case .Local_Get:
+				// read localidx
+				inst.extra, ok = read_u32_leb(ctx)
+			case: errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported/invalid opcode %v", inst.opcode)
+			}
+		}
+
+		return
+	}
+
+	ok = true
+	for {
+		inst: Instruction
+		inst, ok = read_instruction(ctx)
+		if !ok {
+			break
+		}
+
+		append(&insts_dynamic_array, inst)
+
+		if inst.opcode == .End {
+			break
+		}
+	}
+
+	shrink(&insts_dynamic_array)
+	insts = insts_dynamic_array[:]
 	return
 }
 
@@ -494,11 +790,11 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		case .Custom: // do nothing
 		case .Type:     section.types, _ = read_type_section(ctx)
 		case .Import:   // unimplemented()
-		case .Function: section.funcs, _ = read_func_section(ctx)
+		case .Function: section.functions, _ = read_func_section(ctx)
 		case .Table:    // unimplemented()
 		case .Memory:   // unimplemented()
 		case .Global:   // unimplemented()
-		case .Export:   // unimplemented()
+		case .Export:   section.exports, _ = read_export_section(ctx)
 		case .Start:    // unimplemented()
 		case .Element:  // unimplemented()
 		case .Code:     section.codes, _ = read_code_section_structure(ctx) // TODO(robin): split up into multiple units
@@ -525,16 +821,10 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 			)
 
 			if ok {
-				anchor := reader_anchor(ctx)
-				end_byte: byte
-				end_byte, ok = read_byte(ctx)
-
-				if ok {
-					if end_byte != 0x0B {
-						errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported instruction starting with byte %h", end_byte)
-					}
-				}
+				code.expr, _ = read_expr(ctx)
 			}
+
+			code_section.codes[i] = code
 		}
 	}
 
