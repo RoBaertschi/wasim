@@ -8,7 +8,7 @@ TRACY_FIBERS          :: #config(TRACY_FIBERS, false)
 
 when ODIN_OS == .Darwin  do foreign import tracy "tracy.dylib"
 when ODIN_OS == .Windows do foreign import tracy "tracy.lib"
-when ODIN_OS == .Linux   do foreign import tracy "tracy.so"
+when ODIN_OS == .Linux   do foreign import tracy "../bin/tracy.so"
 
 // NOTE(oskar): Opaque
 __tracy_lockable_context_data        :: struct {}

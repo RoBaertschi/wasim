@@ -1,17 +1,20 @@
 package wasim
 
-import "core:sys/info"
-import "core:thread"
-import "core:sync"
-import "base:runtime"
+import "core:strings"
 import "core:os"
 import "core:fmt"
+import "core:sync"
 import "core:flags"
+import "core:thread"
+import "core:sys/info"
 import "core:encoding/varint"
 
+import "base:runtime"
 import "base:intrinsics"
 
 import B "base"
+
+import T "tracy"
 
 MAGIC   :: u32(0x6D736100)
 VERSION :: u32(1)
@@ -373,6 +376,8 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 	code_section := -1
 
 	if B.lane_idx() == 0 {
+		T.ZoneN("Read Module Header")
+
 		anchor := reader_anchor(ctx)
 
 		// read magic number
@@ -467,6 +472,8 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 
 	section_rng := B.lane_range(len(m.sections))
 	for i in section_rng.start..<section_rng.end {
+		T.ZoneN("Read Section")
+
 		section := m.sections[i]
 		defer m.sections[i] = section
 
@@ -512,6 +519,9 @@ read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 
 	B.lane_select_ctx(tdata.lane_ctx)
 
+	temp := B.TEMP_ALLOCATOR_GUARD()
+	T.SetThreadName(strings.clone_to_cstring(t.name.?, allocator = temp) if t.name != nil else "")
+
 	B.lane_sync()
 
 	read_module(tdata.data, tdata.file)
@@ -536,6 +546,8 @@ main :: proc() {
 
 	data, err := os.read_entire_file(cmd.input_module, context.temp_allocator)
 	if err == nil {
+		T.ZoneN("Init")
+
 		temp := B.TEMP_ALLOCATOR_GUARD()
 
 		thread_count: int
