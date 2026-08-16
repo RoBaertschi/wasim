@@ -120,7 +120,8 @@ Function_Type :: struct {
 Type_Index :: distinct u32
 
 Code :: struct {
-	size: int,
+	pos:  int,
+	data: []byte,
 }
 
 Section :: struct {
@@ -168,9 +169,11 @@ errorf :: proc(ctx: ^Read_Ctx, range: Byte_Range, format: string, args: ..any) {
 	fmt.printfln(format, ..args)
 }
 
-reader_anchor :: proc(ctx: ^Read_Ctx) -> int {
+reader_absolute_pos :: proc(ctx: ^Read_Ctx) -> int {
 	return ctx.base + ctx.curr
 }
+
+reader_anchor :: reader_absolute_pos
 
 reader_anchor_range :: proc(ctx: ^Read_Ctx, anchor: int) -> (result: Byte_Range) {
 	result.start = anchor
@@ -324,17 +327,13 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 	return
 }
 
-read_code :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
-	start := reader_anchor(ctx)
-
-	code.size, ok = as(int, read_u32_leb(ctx))
+// Only reads the size of the code, not it's actual content
+read_code_structure :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
+	code.pos = reader_absolute_pos(ctx)
+	size: int
+	size, ok = as(int, read_u32_leb(ctx))
 	if ok {
-		if ctx.curr + code.size <= len(ctx.data) {
-			ctx.curr += code.size
-		} else {
-			ok = false
-			errorf(ctx, reader_anchor_range(ctx, start), "out of bounds code size, pos(%v) + size(%v) in bounds %v", ctx.base + ctx.curr, code.size, B.rng1(ctx.base, ctx.base+len(ctx.data)))
-		}
+		code.data, ok = read_bytes(ctx, size)
 	}
 
 	return
@@ -351,26 +350,7 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 }
 
 read_code_section :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
-	codes, ok = read_vec(ctx, read_code)
-	return
-}
-
-read_sections_into_module :: proc(ctx: ^Read_Ctx) -> (ok: bool) {
-	// ok = true
-	//
-	// for ctx.curr < len(ctx.data) {
-	// 	section: Section
-	// 	section, ok = read_section(ctx)
-	// 	if ok {
-	// 		node := B.arena_push(ctx.m.arena, Section_Node)
-	// 		node.section = section
-	// 		list_push(&ctx.m.sections, node)
-	// 	} else {
-	// 		break
-	// 	}
-	// }
-	//
-	// return
+	codes, ok = read_vec(ctx, read_code_structure)
 	return
 }
 
@@ -386,9 +366,9 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		ctx.m.arenas = B.arena_push_make(ctx.m.arena, []^B.Arena, B.lane_count())
 	}
 
-	ctx.m.arenas[B.lane_idx()] = B.arena_alloc(commited = runtime.Kilobyte * 2)
-
 	B.lane_sync_value(&ctx.m, 0)
+
+	ctx.m.arenas[B.lane_idx()] = B.arena_alloc(commited = runtime.Kilobyte * 2)
 
 	code_section := -1
 
@@ -565,7 +545,7 @@ main :: proc() {
 			thread_count = virtual_core_count if virtual_core_count != 0 else physical_core_count
 		}
 
-		thread_count = max(1, cmd.thread_count)
+		thread_count = max(1, thread_count)
 
 
 		lane_shared_memory: u64
