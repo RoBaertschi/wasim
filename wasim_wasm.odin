@@ -93,6 +93,17 @@ reader_data_guard :: proc(ctx: ^Read_Ctx, count: int) -> (old_base, resume_curr:
 	return reader_push_data(ctx, count)
 }
 
+Limits_Kind :: enum u8 {
+	Unlimited,
+	Limited,
+}
+
+Limits :: struct {
+	kind: Limits_Kind,
+	min:  u32,
+	max:  u32,
+}
+
 Section_Kind :: enum byte {
 	Custom,
 	Type,
@@ -125,6 +136,21 @@ Type_Index :: distinct u32
 Local :: struct {
 	type:   Value_Type,
 	repeat: u32,
+}
+
+Memory :: distinct Limits
+
+Export_Kind :: enum u8 {
+	Func,
+	Table,
+	Mem,
+	Global,
+}
+
+Export :: struct {
+	kind: Export_Kind,
+	name: string,
+	index: u32,
 }
 
 Instruction_Opcode :: enum u8 {
@@ -341,25 +367,13 @@ Code :: struct {
 	expr:   []Instruction,
 }
 
-Export_Kind :: enum u8 {
-	Func,
-	Table,
-	Mem,
-	Global,
-}
-
-Export :: struct {
-	kind: Export_Kind,
-	name: string,
-	index: u32,
-}
-
 Section :: struct {
 	kind:      Section_Kind,
 	pos:       int,
 	data:      []byte,
 	types:     []Function_Type,
 	functions: []Type_Index,
+	memory:    []Memory,
 	exports:   []Export,
 	codes:     []Code,
 }
@@ -492,6 +506,22 @@ read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where i
 
 read_u32_leb :: proc(ctx: ^Read_Ctx) -> (value: u32, ok: bool) { return read_uXX_leb(ctx, u32) }
 
+read_byte_as_enum :: proc(ctx: ^Read_Ctx, $T: typeid, $T_NAME: string) -> (value: T, ok: bool) where intrinsics.type_is_enum(T), size_of(T) == size_of(byte) {
+	anchor := reader_anchor(ctx)
+	t_byte: u8
+	t_byte, ok = read_byte(ctx)
+	if ok {
+		if t_byte <= byte(max(T)) {
+			value = T(t_byte)
+			ok = true
+		} else {
+			errorf(ctx, reader_anchor_range(ctx, anchor), "invalid " + T_NAME + " %v: %v(0) <= %v(%v)", t_byte, min(T), max(T), byte(max(T)))
+		}
+	}
+
+	return
+}
+
 as :: proc($T: typeid, a: $A, ok: bool) -> (T, bool) {
 	return (T)(a), ok
 }
@@ -525,20 +555,20 @@ read_name :: proc(ctx: ^Read_Ctx) -> (s: string, ok: bool) {
 	return
 }
 
-read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
-	start := reader_anchor(ctx)
-	
-	value_type_byte: byte
-	value_type_byte, ok = read_byte(ctx)
-
+read_limits :: proc(ctx: ^Read_Ctx) -> (limits: Limits, ok: bool) {
+	limits.kind, ok = read_byte_as_enum(ctx, Limits_Kind, "limits kind")
 	if ok {
-		if value_type_byte <= byte(max(Value_Type)) {
-			value_type = Value_Type(value_type_byte)
-		} else {
-			errorf(ctx, reader_anchor_range(ctx, start), "invalid value type %v: %v(0) <= %v(%v)", value_type_byte, min(Value_Type), max(Value_Type), byte(max(Value_Type)))
+		limits.min, ok = read_u32_leb(ctx)
+		if ok && limits.kind == .Limited {
+			limits.max, ok = read_u32_leb(ctx)
 		}
 	}
 
+	return
+}
+
+read_value_type :: proc(ctx: ^Read_Ctx) -> (value_type: Value_Type, ok: bool) {
+	value_type, ok = read_byte_as_enum(ctx, Value_Type, "value type")
 	return
 }
 
@@ -573,15 +603,9 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 read_export :: proc(ctx: ^Read_Ctx) -> (export: Export, ok: bool) {
 	export.name, ok = read_name(ctx)
 	if ok {
-		anchor := reader_anchor(ctx)
-		kind_byte: u8
-		kind_byte, ok = read_byte(ctx)
-		if kind_byte <= byte(max(Export_Kind)) {
-			export.kind = Export_Kind(kind_byte)
-
+		export.kind, ok = read_byte_as_enum(ctx, Export_Kind, "export kind")
+		if ok {
 			export.index, ok = read_u32_leb(ctx)
-		} else {
-			errorf(ctx, reader_anchor_range(ctx, anchor), "invalid export kind %v: %v(0) <= %v(%v)", kind_byte, min(Export_Kind), max(Export_Kind), byte(max(Export_Kind)))
 		}
 	}
 	return
@@ -606,6 +630,11 @@ read_type_section :: proc(ctx: ^Read_Ctx) -> (types: []Function_Type, ok: bool) 
 
 read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 	funcs, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (type_index: Type_Index, ok: bool) { return as(Type_Index, read_u32_leb(ctx)) })
+	return
+}
+
+read_memory_section :: proc(ctx: ^Read_Ctx) -> (mems: []Memory, ok: bool) {
+	mems, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (memory: Memory, ok: bool) { return as(Memory, read_limits(ctx)) })
 	return
 }
 
