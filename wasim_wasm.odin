@@ -821,7 +821,7 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		case .Import:   // unimplemented()
 		case .Function: section.functions, _ = read_func_section(ctx)
 		case .Table:    // unimplemented()
-		case .Memory:   // unimplemented()
+		case .Memory:   section.memory, _ = read_memory_section(ctx)
 		case .Global:   // unimplemented()
 		case .Export:   section.exports, _ = read_export_section(ctx)
 		case .Start:    // unimplemented()
