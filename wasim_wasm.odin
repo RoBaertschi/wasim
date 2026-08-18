@@ -131,6 +131,40 @@ Function_Type :: struct {
 	rets: []Value_Type,
 }
 
+External_Kind :: enum u8 {
+	Func,
+	Table,
+	Mem,
+	Global,
+}
+
+Element_Type :: enum u8 {
+	Func_Ref = 0x70,
+}
+
+Table_Type :: struct {
+	element_type: Element_Type,
+	limits:       Limits,
+}
+
+Global_Type :: struct {
+	mutable: b8,
+	type:    Value_Type,
+}
+
+Import :: struct {
+	kind:   External_Kind,
+	module: string,
+	name:   string,
+
+	using _: struct #raw_union {
+		type_index:  u32         `raw_union_tag:"kind=Func"  `, // for Func
+		table_type:  Table_Type  `raw_union_tag:"kind=Table" `, // for Table
+		mem_type:    Memory      `raw_union_tag:"kind=Mem"   `, // for Mem
+		global_type: Global_Type `raw_union_tag:"kind=Global"`, // for Global
+	},
+}
+
 Type_Index :: distinct u32
 
 Local :: struct {
@@ -140,15 +174,14 @@ Local :: struct {
 
 Memory :: distinct Limits
 
-Export_Kind :: enum u8 {
-	Func,
-	Table,
-	Mem,
-	Global,
+Global :: struct {
+	mutable: b8,
+	type:    Value_Type,
+	expr:    []Instruction,
 }
 
 Export :: struct {
-	kind: Export_Kind,
+	kind: External_Kind,
 	name: string,
 	index: u32,
 }
@@ -371,11 +404,16 @@ Section :: struct {
 	kind:      Section_Kind,
 	pos:       int,
 	data:      []byte,
-	types:     []Function_Type,
-	functions: []Type_Index,
-	memory:    []Memory,
-	exports:   []Export,
-	codes:     []Code,
+
+	using _: struct #raw_union {
+		types:     []Function_Type `raw_union_tag:"kind=Type"`,
+		imps:      []Import        `raw_union_tag:"kind=Import"`, // import is a keyword, so we just use imp instead
+		functions: []Type_Index    `raw_union_tag:"kind=Function"`,
+		memory:    []Memory        `raw_union_tag:"kind=Memory"`,
+		globals:   []Global        `raw_union_tag:"kind=Global"`,
+		exports:   []Export        `raw_union_tag:"kind=Export"`,
+		codes:     []Code          `raw_union_tag:"kind=Code"`,
+	},
 }
 
 Section_Node :: struct {
@@ -475,6 +513,36 @@ read_byte :: proc(ctx: ^Read_Ctx) -> (result: u8, ok: bool) {
 	return
 }
 
+read_iXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where intrinsics.type_is_integer(T), !intrinsics.type_is_unsigned(T) {
+	MAX_BYTES :: int(intrinsics.constant_ceil(f64(size_of(value) * 8) / 7))
+	MAX       :: i128(max(T))
+	MIN       :: i128(min(T))
+
+	start := reader_anchor(ctx)
+
+	value_i128, size, err := varint.decode_ileb128_buffer(ctx.data[ctx.curr:])
+	switch err {
+	case .None:
+		// validate LEB u32 size
+		if size <= MAX_BYTES {
+			if MIN <= value_i128 && value_i128 <= MAX {
+				// valid LEB u32 found
+				ok     = true
+				value  = T(value_i128)
+				ctx.curr += size
+			} else {
+				errorf(ctx, reader_anchor_range(ctx, start), "LEB %[0]v has value that does not fit into a %[0]v: MIN(%v) <= %v <= MAX(%v)", typeid_of(T), MIN, value_i128, MAX)
+			}
+		} else {
+			errorf(ctx, reader_anchor_range(ctx, start), "LEB has to many bytes for a %v: %v <= %v", typeid_of(T), size, MAX_BYTES)
+		}
+	case .Buffer_Too_Small: errorf(ctx, reader_anchor_range(ctx, start), "missing bytes for LEB %v", typeid_of(T))
+	case .Value_Too_Large:  errorf(ctx, reader_anchor_range(ctx, start), "LEB to large to even fit into a i128")
+	}
+
+	return
+}
+
 read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where intrinsics.type_is_integer(T), intrinsics.type_is_unsigned(T) {
 	MAX_BYTES :: int(intrinsics.constant_ceil(f64(size_of(value) * 8) / 7))
 	MAX       :: u128(max(T))
@@ -505,6 +573,7 @@ read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where i
 }
 
 read_u32_leb :: proc(ctx: ^Read_Ctx) -> (value: u32, ok: bool) { return read_uXX_leb(ctx, u32) }
+read_i32_leb :: proc(ctx: ^Read_Ctx) -> (value: i32, ok: bool) { return read_iXX_leb(ctx, i32) }
 
 read_byte_as_enum :: proc(ctx: ^Read_Ctx, $T: typeid, $T_NAME: string) -> (value: T, ok: bool) where intrinsics.type_is_enum(T), size_of(T) == size_of(byte) {
 	anchor := reader_anchor(ctx)
@@ -600,10 +669,60 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 	return
 }
 
+read_table_type :: proc(ctx: ^Read_Ctx) -> (table_type: Table_Type, ok: bool) {
+	return
+}
+
+read_global_type :: proc(ctx: ^Read_Ctx) -> (global_type: Global_Type, ok: bool) {
+	global_type.type, ok = read_value_type(ctx)
+	if ok {
+		global_type.mutable, ok = read_t(ctx, b8)
+	}
+
+	return
+}
+
+read_import :: proc(ctx: ^Read_Ctx) -> (imp: Import, ok: bool) {
+	imp.module, ok = read_name(ctx)
+	if ok {
+		imp.name, ok = read_name(ctx)
+	}
+
+	if ok {
+		imp.kind, ok = read_byte_as_enum(ctx, External_Kind, "external kind")
+	}
+
+	if ok {
+		switch imp.kind {
+		case .Func:
+			imp.type_index, ok = read_u32_leb(ctx)
+		case .Table:
+			imp.table_type, ok = read_table_type(ctx)
+		case .Mem:
+			imp.mem_type, ok = as(Memory, read_limits(ctx))
+		case .Global:
+			imp.global_type, ok = read_global_type(ctx)
+		}
+	}
+
+	return
+}
+
+read_global :: proc(ctx: ^Read_Ctx) -> (global: Global, ok: bool) {
+	global.type, ok = read_value_type(ctx)
+	if ok {
+		global.mutable, ok = read_t(ctx, b8)
+		if ok {
+			global.expr, ok = read_expr(ctx)
+		}
+	}
+	return
+}
+
 read_export :: proc(ctx: ^Read_Ctx) -> (export: Export, ok: bool) {
 	export.name, ok = read_name(ctx)
 	if ok {
-		export.kind, ok = read_byte_as_enum(ctx, Export_Kind, "export kind")
+		export.kind, ok = read_byte_as_enum(ctx, External_Kind, "external kind")
 		if ok {
 			export.index, ok = read_u32_leb(ctx)
 		}
@@ -628,6 +747,11 @@ read_type_section :: proc(ctx: ^Read_Ctx) -> (types: []Function_Type, ok: bool) 
 	return
 }
 
+read_import_section :: proc(ctx: ^Read_Ctx) -> (imps: []Import, ok: bool) {
+	imps, ok = read_vec(ctx, read_import)
+	return
+}
+
 read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 	funcs, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (type_index: Type_Index, ok: bool) { return as(Type_Index, read_u32_leb(ctx)) })
 	return
@@ -635,6 +759,11 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 
 read_memory_section :: proc(ctx: ^Read_Ctx) -> (mems: []Memory, ok: bool) {
 	mems, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (memory: Memory, ok: bool) { return as(Memory, read_limits(ctx)) })
+	return
+}
+
+read_global_section :: proc(ctx: ^Read_Ctx) -> (globals: []Global, ok: bool) {
+	globals, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (global: Global, ok: bool) { return read_global(ctx) })
 	return
 }
 
@@ -665,6 +794,9 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (insts: []Instruction, ok: bool) {
 			case .Local_Get:
 				// read localidx
 				inst.extra, ok = read_u32_leb(ctx)
+			case .I32_Const:
+				// read constant
+				inst.extra, ok = as(u32, read_i32_leb(ctx))
 			case: errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported/invalid opcode %v", inst.opcode)
 			}
 		}
@@ -817,16 +949,16 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		// we do not care about ok==false, because we will not handle ok but instead look at the diagnostic list
 		switch section.kind {
 		case .Custom: // do nothing
-		case .Type:     section.types, _ = read_type_section(ctx)
-		case .Import:   // unimplemented()
+		case .Type:     section.types, _     = read_type_section(ctx)
+		case .Import:   section.imps, _      = read_import_section(ctx)
 		case .Function: section.functions, _ = read_func_section(ctx)
 		case .Table:    // unimplemented()
-		case .Memory:   section.memory, _ = read_memory_section(ctx)
-		case .Global:   // unimplemented()
-		case .Export:   section.exports, _ = read_export_section(ctx)
+		case .Memory:   section.memory, _    = read_memory_section(ctx)
+		case .Global:   section.globals, _   = read_global_section(ctx)
+		case .Export:   section.exports, _   = read_export_section(ctx)
 		case .Start:    // unimplemented()
 		case .Element:  // unimplemented()
-		case .Code:     section.codes, _ = read_code_section_structure(ctx) // TODO(robin): split up into multiple units
+		case .Code:     section.codes, _     = read_code_section_structure(ctx) // TODO(robin): split up into multiple units
 		case .Data:     // unimplemented()
 		}
 	}
