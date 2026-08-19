@@ -407,6 +407,7 @@ Section :: struct {
 
 	using _: struct #raw_union {
 		types:     []Function_Type `raw_union_tag:"kind=Type"`,
+		tables:    []Table_Type    `raw_union_tag:"kind=Table"`,
 		imps:      []Import        `raw_union_tag:"kind=Import"`, // import is a keyword, so we just use imp instead
 		functions: []Type_Index    `raw_union_tag:"kind=Function"`,
 		memory:    []Memory        `raw_union_tag:"kind=Memory"`,
