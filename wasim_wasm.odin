@@ -216,7 +216,7 @@ Instruction_Opcode :: enum u8 {
 	Unreachable   = 0x00,
 	Nop           = 0x01,
 	Block         = 0x02, // Block_Type, ^Instruction
-	Loop          = 0x03,
+	Loop          = 0x03, // Block_Type, ^Instruction
 	If            = 0x04, // NOTE: else is optional
 	Br            = 0x0C,
 	Br_If         = 0x0E,

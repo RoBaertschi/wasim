@@ -94,7 +94,7 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (insts: []Instruction, ok: bool) {
 
 			case .Unreachable, .Nop: // nothing
 
-			case .Block:
+			case .Block, .Loop:
 				block_type: []Value_Type
 				block_type, ok = read_block_type(ctx, temp)
 
