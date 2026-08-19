@@ -1,0 +1,4 @@
+{
+    "enable_snippets": true,
+    "checker_args": "-vet"
+}

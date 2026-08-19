@@ -122,8 +122,8 @@ Section_Kind :: enum byte {
 Value_Type :: enum byte {
 	I32 = 0x7F,
 	I64 = 0x7E,
-	U32 = 0x7D,
-	U64 = 0x7C,
+	F32 = 0x7D,
+	F64 = 0x7C,
 }
 
 Function_Type :: struct {
@@ -184,6 +184,12 @@ Export :: struct {
 	kind: External_Kind,
 	name: string,
 	index: u32,
+}
+
+Element :: struct {
+	index: u32,
+	expr:  []Instruction,
+	init:  []u32,
 }
 
 Instruction_Opcode :: enum u8 {
@@ -400,6 +406,12 @@ Code :: struct {
 	expr:   []Instruction,
 }
 
+Data :: struct {
+	index: u32,
+	expr:  []Instruction,
+	init:  []byte,
+}
+
 Section :: struct {
 	kind:      Section_Kind,
 	pos:       int,
@@ -413,7 +425,10 @@ Section :: struct {
 		memory:    []Memory        `raw_union_tag:"kind=Memory"`,
 		globals:   []Global        `raw_union_tag:"kind=Global"`,
 		exports:   []Export        `raw_union_tag:"kind=Export"`,
+		start:     u32             `raw_union_tag:"kind=Start"`,
+		elements:  []Element       `raw_union_tag:"kind=Element"`,
 		codes:     []Code          `raw_union_tag:"kind=Code"`,
+		datas:     []Data          `raw_union_tag:"kind=Data"`,
 	},
 }
 
@@ -670,7 +685,28 @@ read_func_type :: proc(ctx: ^Read_Ctx) -> (type: Function_Type, ok: bool) {
 	return
 }
 
+read_element_type :: proc(ctx: ^Read_Ctx) -> (element_type: Element_Type, ok: bool) {
+	anchor := reader_anchor(ctx)
+
+	element_type_byte: byte
+	element_type_byte, ok = read_byte(ctx)
+	if ok {
+		if element_type_byte == 0x70 /* The only valid element type for now */ {
+			element_type = .Func_Ref
+		} else {
+			ok = false
+			errorf(ctx, reader_anchor_range(ctx, anchor), "invalid element type, only support funcref(0x70) but got %h", element_type_byte)
+		}
+	}
+	return
+}
+
 read_table_type :: proc(ctx: ^Read_Ctx) -> (table_type: Table_Type, ok: bool) {
+	table_type.element_type, ok = read_element_type(ctx)
+	if ok {
+		table_type.limits, ok = read_limits(ctx)
+	}
+
 	return
 }
 
@@ -731,6 +767,19 @@ read_export :: proc(ctx: ^Read_Ctx) -> (export: Export, ok: bool) {
 	return
 }
 
+read_element :: proc(ctx: ^Read_Ctx) -> (element: Element, ok: bool) {
+	element.index, ok = read_u32_leb(ctx)
+	if ok {
+		element.expr, ok = read_expr(ctx)
+	}
+
+	if ok {
+		element.init, ok = read_vec(ctx, read_u32_leb)
+	}
+
+	return
+}
+
 // Only reads the size of the code, not it's actual content
 read_code_structure :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
 	code.pos = reader_absolute_pos(ctx)
@@ -738,6 +787,23 @@ read_code_structure :: proc(ctx: ^Read_Ctx) -> (code: Code, ok: bool) {
 	size, ok = as(int, read_u32_leb(ctx))
 	if ok {
 		code.data, ok = read_bytes(ctx, size)
+	}
+
+	return
+}
+
+read_data :: proc(ctx: ^Read_Ctx) -> (data: Data, ok: bool) {
+	data.index, ok = read_u32_leb(ctx)
+	if ok {
+		data.expr, ok = read_expr(ctx)
+	}
+
+	if ok {
+		init_count: u32
+		init_count, ok = read_u32_leb(ctx)
+		if ok {
+			data.init, ok = read_bytes(ctx, int(init_count))
+		}
 	}
 
 	return
@@ -758,18 +824,28 @@ read_func_section :: proc(ctx: ^Read_Ctx) -> (funcs: []Type_Index, ok: bool) {
 	return
 }
 
+read_table_section :: proc(ctx: ^Read_Ctx) -> (tables: []Table_Type, ok: bool) {
+	tables, ok = read_vec(ctx, read_table_type)
+	return
+}
+
 read_memory_section :: proc(ctx: ^Read_Ctx) -> (mems: []Memory, ok: bool) {
 	mems, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (memory: Memory, ok: bool) { return as(Memory, read_limits(ctx)) })
 	return
 }
 
 read_global_section :: proc(ctx: ^Read_Ctx) -> (globals: []Global, ok: bool) {
-	globals, ok = read_vec(ctx, proc(ctx: ^Read_Ctx) -> (global: Global, ok: bool) { return read_global(ctx) })
+	globals, ok = read_vec(ctx, read_global)
 	return
 }
 
 read_export_section :: proc(ctx: ^Read_Ctx) -> (exports: []Export, ok: bool) {
 	exports, ok = read_vec(ctx, read_export)
+	return
+}
+
+read_element_section :: proc(ctx: ^Read_Ctx) -> (elements: []Element, ok: bool) {
+	elements, ok = read_vec(ctx, read_element)
 	return
 }
 
@@ -822,6 +898,11 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (insts: []Instruction, ok: bool) {
 
 	shrink(&insts_dynamic_array)
 	insts = insts_dynamic_array[:]
+	return
+}
+
+read_data_section :: proc(ctx: ^Read_Ctx) -> (datas: []Data, ok: bool) {
+	datas, ok = read_vec(ctx, read_data)
 	return
 }
 
@@ -950,17 +1031,17 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 		// we do not care about ok==false, because we will not handle ok but instead look at the diagnostic list
 		switch section.kind {
 		case .Custom: // do nothing
-		case .Type:     section.types, _     = read_type_section(ctx)
-		case .Import:   section.imps, _      = read_import_section(ctx)
+		case .Type:     section.types,     _ = read_type_section(ctx)
+		case .Import:   section.imps,      _ = read_import_section(ctx)
 		case .Function: section.functions, _ = read_func_section(ctx)
-		case .Table:    // unimplemented()
-		case .Memory:   section.memory, _    = read_memory_section(ctx)
-		case .Global:   section.globals, _   = read_global_section(ctx)
-		case .Export:   section.exports, _   = read_export_section(ctx)
-		case .Start:    // unimplemented()
-		case .Element:  // unimplemented()
-		case .Code:     section.codes, _     = read_code_section_structure(ctx) // TODO(robin): split up into multiple units
-		case .Data:     // unimplemented()
+		case .Table:    section.tables,    _ = read_table_section(ctx)
+		case .Memory:   section.memory,    _ = read_memory_section(ctx)
+		case .Global:   section.globals,   _ = read_global_section(ctx)
+		case .Export:   section.exports,   _ = read_export_section(ctx)
+		case .Start:    section.start,     _ = read_u32_leb(ctx)
+		case .Element:  section.elements,  _ = read_element_section(ctx)
+		case .Code:     section.codes,     _ = read_code_section_structure(ctx)
+		case .Data:     section.datas,     _ = read_data_section(ctx)
 		}
 	}
 
