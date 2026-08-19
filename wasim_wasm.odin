@@ -177,7 +177,7 @@ Memory :: distinct Limits
 Global :: struct {
 	mutable: b8,
 	type:    Value_Type,
-	expr:    []Instruction,
+	expr:    Expr,
 }
 
 Export :: struct {
@@ -188,7 +188,7 @@ Export :: struct {
 
 Element :: struct {
 	index: u32,
-	expr:  []Instruction,
+	expr:  Expr,
 	init:  []u32,
 }
 
@@ -208,71 +208,99 @@ Element :: struct {
 // ## ^Instruction
 // Points to another instruction in the instruction stack, this is an u32 as an index into the stack.
 //
+// ## Maybe(^Instruction)
+// If zero, this does not point anywhere, anything else is to be interpreted like ^Instruction.
+//
 // ## Block_Type
 // This encodes a []Value_Type, first comes a byte(TODO(robin): find out what the return limits actually are) with the
 // size of the Value_Type and following it are that amount of Value_Type's.
+//
+// ## labelidx(u32)
+// Labelidx represented as a u32.
+//
+// ## funcidx(u32)
+// Funcidx represented as a u32.
+//
+// ## typeidx(u32)
+// Typeidx represented as a u32.
+//
+// ## localidx(u32)
+// Localidx represented as a u32.
+//
+// ## globalidx(u32)
+// Globalidx represented as a u32.
+//
+// ## []$E
+// Vec of `E`, starts with a `size` represented as a u32, then following it are E\[`size`\] elements.
+//
+// ## memarg
+// Align is a u32 followed by a u32 for the offset.
 Instruction_Opcode :: enum u8 {
 	// §5.4.1 Control Instructions
 	Unreachable   = 0x00,
 	Nop           = 0x01,
 	Block         = 0x02, // Block_Type, ^Instruction
 	Loop          = 0x03, // Block_Type, ^Instruction
-	If            = 0x04, // NOTE: else is optional
-	Br            = 0x0C,
-	Br_If         = 0x0E,
+
+	// NOTE: else is optional
+	// Block_Type, ^Instruction, Maybe(^Instruction)
+	If            = 0x04,
+	Br            = 0x0C, // extra=labelidx(u32)
+	Br_If         = 0x0D, // extra=labelidx(u32)
+	Br_Table      = 0x0E, // []labelidx(u32), labelidx(u32)
 	Return        = 0x0F,
-	Call          = 0x10,
-	Call_Indirect = 0x11,
+	Call          = 0x10, // extra=funcidx(u32)
+	Call_Indirect = 0x11, // extra=funcidx(u32)
 
 	// §5.4.2 Parametric Instructions
 	Drop   = 0x1A,
 	Select = 0x1B,
 
 	// §5.4.3 Variable Instructions
-	Local_Get  = 0x20,
-	Local_Set  = 0x21,
-	Local_Tee  = 0x22,
-	Global_Get = 0x23,
-	Global_Set = 0x24,
+	Local_Get  = 0x20, // extra=localidx(u32)
+	Local_Set  = 0x21, // extra=localidx(u32)
+	Local_Tee  = 0x22, // extra=localidx(u32)
+	Global_Get = 0x23, // extra=globalidx(u32)
+	Global_Set = 0x24, // extra=globalidx(u32)
 
 	// §5.4.4 Memory Instructions
-	I32_Load = 0x28,
-	I64_Load = 0x29,
-	F32_Load = 0x2A,
-	F64_Load = 0x2B,
+	I32_Load = 0x28, // memarg
+	I64_Load = 0x29, // memarg
+	F32_Load = 0x2A, // memarg
+	F64_Load = 0x2B, // memarg
 
-	I32_Load8_s  = 0x2C,
-	I32_Load8_u  = 0x2D,
-	I32_Load16_s = 0x2E,
-	I32_Load16_u = 0x2F,
+	I32_Load8_s  = 0x2C, // memarg
+	I32_Load8_u  = 0x2D, // memarg
+	I32_Load16_s = 0x2E, // memarg
+	I32_Load16_u = 0x2F, // memarg
 
-	I64_Load8_s  = 0x30,
-	I64_Load8_u  = 0x31,
-	I64_Load16_s = 0x32,
-	I64_Load16_u = 0x33,
-	I64_Load32_s = 0x34,
-	I64_Load32_u = 0x35,
+	I64_Load8_s  = 0x30, // memarg
+	I64_Load8_u  = 0x31, // memarg
+	I64_Load16_s = 0x32, // memarg
+	I64_Load16_u = 0x33, // memarg
+	I64_Load32_s = 0x34, // memarg
+	I64_Load32_u = 0x35, // memarg
 
-	I32_Store = 0x36,
-	I64_Store = 0x37,
-	F32_Store = 0x38,
-	F64_Store = 0x39,
+	I32_Store = 0x36, // memarg
+	I64_Store = 0x37, // memarg
+	F32_Store = 0x38, // memarg
+	F64_Store = 0x39, // memarg
 
-	I32_Store8  = 0x3A,
-	I32_Store16 = 0x3B,
+	I32_Store8  = 0x3A, // memarg
+	I32_Store16 = 0x3B, // memarg
 
-	I64_Store8  = 0x3C,
-	I64_Store16 = 0x3D,
-	I64_Store32 = 0x3E,
+	I64_Store8  = 0x3C, // memarg
+	I64_Store16 = 0x3D, // memarg
+	I64_Store32 = 0x3E, // memarg
 
 	Memory_Size = 0x3F,
 	Memory_Grow = 0x40,
 
 	// §5.4.5 Numeric Instructions
-	I32_Const = 0x41,
-	I64_Const = 0x42,
-	F32_Const = 0x43,
-	F64_Const = 0x44,
+	I32_Const = 0x41, // extra=u32
+	I64_Const = 0x42, // u64
+	F32_Const = 0x43, // extra=f32
+	F64_Const = 0x44, // f64
 
 	I32_Eqz  = 0x45,
 	I32_Eq   = 0x46,
@@ -418,17 +446,22 @@ Instruction :: struct {
 	extra:  u32,
 }
 
+Expr :: struct {
+	instructions: []Instruction,
+	extras:       []byte,
+}
+
 Code :: struct {
 	pos:  int,
 	data: []byte,
 
 	locals: []Local,
-	expr:   []Instruction,
+	expr:   Expr,
 }
 
 Data :: struct {
 	index: u32,
-	expr:  []Instruction,
+	expr:  Expr,
 	init:  []byte,
 }
 
@@ -534,6 +567,7 @@ read_t :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) {
 }
 
 read_u32 :: proc(ctx: ^Read_Ctx) -> (u32, bool) { return read_t(ctx, u32) }
+read_u64 :: proc(ctx: ^Read_Ctx) -> (u64, bool) { return read_t(ctx, u64) }
 
 read_byte :: proc(ctx: ^Read_Ctx) -> (result: u8, ok: bool) {
 	start := reader_anchor(ctx)
@@ -611,6 +645,9 @@ read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where i
 read_u32_leb :: proc(ctx: ^Read_Ctx) -> (value: u32, ok: bool) { return read_uXX_leb(ctx, u32) }
 read_i32_leb :: proc(ctx: ^Read_Ctx) -> (value: i32, ok: bool) { return read_iXX_leb(ctx, i32) }
 
+read_u64_leb :: proc(ctx: ^Read_Ctx) -> (value: u64, ok: bool) { return read_uXX_leb(ctx, u64) }
+read_i64_leb :: proc(ctx: ^Read_Ctx) -> (value: i64, ok: bool) { return read_iXX_leb(ctx, i64) }
+
 read_validate_enum :: proc(ctx: ^Read_Ctx, anchor: int, input: byte, $T: typeid, $T_NAME: string) -> (value: T, ok: bool)  where intrinsics.type_is_enum(T), size_of(T) == size_of(byte) {
 	if byte(min(T)) <= input && input <= byte(max(T)) {
 		value = T(input)
@@ -637,11 +674,17 @@ as :: proc($T: typeid, a: $A, ok: bool) -> (T, bool) {
 	return (T)(a), ok
 }
 
-read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool)) -> (data: []T, ok: bool) {
+read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool), arena: ^B.Arena = nil) -> (data: []T, ok: bool) {
+	arena := arena
+
+	if arena == nil {
+		arena = reader_arena(ctx)
+	}
+
 	size: u32
 	size, ok = read_u32_leb(ctx)
 	if ok {
-		data = B.arena_push_make(reader_arena(ctx), []T, size)
+		data = B.arena_push_make(arena, []T, size)
 
 		for i in 0..<size {
 			data[i], ok = parse_proc(ctx)
