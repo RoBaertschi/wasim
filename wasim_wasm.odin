@@ -192,11 +192,30 @@ Element :: struct {
 	init:  []u32,
 }
 
+// # Instruction Encoding
+// Instructions are encoded in various ways, if they need more than 4 bytes to be encoded, the extra stack
+// is used to store the extra data, then the decoder stores a position into the stack in `extra`.
+//
+// Besides each opcode, we comment how it is encoded. If nothing, then no comment, if only extra than extra=...
+// and if none of the ones before, we list the decoded extras like this: `// Value_Type, ^Instruction`.
+// Each of those strings before the comma correspond to some common encoding, which are listed below.
+//
+// # Common Encodings
+//
+// ## Value_Type
+// The byte of the Value_Type
+//
+// ## ^Instruction
+// Points to another instruction in the instruction stack, this is an u32 as an index into the stack.
+//
+// ## Block_Type
+// This encodes a []Value_Type, first comes a byte(TODO(robin): find out what the return limits actually are) with the
+// size of the Value_Type and following it are that amount of Value_Type's.
 Instruction_Opcode :: enum u8 {
 	// §5.4.1 Control Instructions
 	Unreachable   = 0x00,
 	Nop           = 0x01,
-	Block         = 0x02,
+	Block         = 0x02, // Block_Type, ^Instruction
 	Loop          = 0x03,
 	If            = 0x04, // NOTE: else is optional
 	Br            = 0x0C,
@@ -388,12 +407,13 @@ Instruction_Opcode :: enum u8 {
 	F64_Reinterpret_I64 = 0xBF,
 
 	// Other
-	End = 0x0B,
+	Else = 0x05,
+	End  = 0x0B,
 }
 
 Instruction :: struct {
 	opcode: Instruction_Opcode,
-	// this store extra data, either inline or externally in an arena
+	// this stores extra data, either inline or externally in an arena
 	// it depends on the instruction, where this data is
 	extra:  u32,
 }
@@ -591,17 +611,23 @@ read_uXX_leb :: proc(ctx: ^Read_Ctx, $T: typeid) -> (value: T, ok: bool) where i
 read_u32_leb :: proc(ctx: ^Read_Ctx) -> (value: u32, ok: bool) { return read_uXX_leb(ctx, u32) }
 read_i32_leb :: proc(ctx: ^Read_Ctx) -> (value: i32, ok: bool) { return read_iXX_leb(ctx, i32) }
 
+read_validate_enum :: proc(ctx: ^Read_Ctx, anchor: int, input: byte, $T: typeid, $T_NAME: string) -> (value: T, ok: bool)  where intrinsics.type_is_enum(T), size_of(T) == size_of(byte) {
+	if byte(min(T)) <= input && input <= byte(max(T)) {
+		value = T(input)
+		ok = true
+	} else {
+		errorf(ctx, reader_anchor_range(ctx, anchor), "invalid " + T_NAME + " %v: %v(0) <= %v(%v)", input, min(T), max(T), byte(max(T)))
+	}
+
+	return
+}
+
 read_byte_as_enum :: proc(ctx: ^Read_Ctx, $T: typeid, $T_NAME: string) -> (value: T, ok: bool) where intrinsics.type_is_enum(T), size_of(T) == size_of(byte) {
 	anchor := reader_anchor(ctx)
 	t_byte: u8
 	t_byte, ok = read_byte(ctx)
 	if ok {
-		if t_byte <= byte(max(T)) {
-			value = T(t_byte)
-			ok = true
-		} else {
-			errorf(ctx, reader_anchor_range(ctx, anchor), "invalid " + T_NAME + " %v: %v(0) <= %v(%v)", t_byte, min(T), max(T), byte(max(T)))
-		}
+		value, ok = read_validate_enum(ctx, anchor, t_byte, T, T_NAME)
 	}
 
 	return
@@ -615,7 +641,7 @@ read_vec :: proc(ctx: ^Read_Ctx, parse_proc: proc(ctx: ^Read_Ctx) -> ($T, bool))
 	size: u32
 	size, ok = read_u32_leb(ctx)
 	if ok {
-		data = B.arena_push_make(ctx.m.arena, []T, size)
+		data = B.arena_push_make(reader_arena(ctx), []T, size)
 
 		for i in 0..<size {
 			data[i], ok = parse_proc(ctx)
@@ -851,53 +877,6 @@ read_element_section :: proc(ctx: ^Read_Ctx) -> (elements: []Element, ok: bool) 
 
 read_code_section_structure :: proc(ctx: ^Read_Ctx) -> (codes: []Code, ok: bool) {
 	codes, ok = read_vec(ctx, read_code_structure)
-	return
-}
-
-read_expr :: proc(ctx: ^Read_Ctx) -> (insts: []Instruction, ok: bool) {
-	insts_dynamic_array := make([dynamic]Instruction, allocator = reader_allocator(ctx))
-
-	read_instruction :: proc(ctx: ^Read_Ctx) -> (inst: Instruction, ok: bool) {
-		anchor := reader_anchor(ctx)
-
-		opcode: u8
-		opcode, ok = read_byte(ctx)
-
-		if ok {
-			inst.opcode = Instruction_Opcode(opcode)
-			// TODO(robin): implement all instructions
-			#partial switch inst.opcode {
-			case .End:
-			case .Local_Get:
-				// read localidx
-				inst.extra, ok = read_u32_leb(ctx)
-			case .I32_Const:
-				// read constant
-				inst.extra, ok = as(u32, read_i32_leb(ctx))
-			case: errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported/invalid opcode %v", inst.opcode)
-			}
-		}
-
-		return
-	}
-
-	ok = true
-	for {
-		inst: Instruction
-		inst, ok = read_instruction(ctx)
-		if !ok {
-			break
-		}
-
-		append(&insts_dynamic_array, inst)
-
-		if inst.opcode == .End {
-			break
-		}
-	}
-
-	shrink(&insts_dynamic_array)
-	insts = insts_dynamic_array[:]
 	return
 }
 
