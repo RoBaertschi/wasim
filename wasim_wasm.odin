@@ -446,6 +446,8 @@ Instruction :: struct {
 	extra:  u32,
 }
 
+// NOTE: The actual instruction data starts at 1, not 0
+//       0 is a dummy sentinel used for optional values that are not there
 Expr :: struct {
 	instructions: []Instruction,
 	extras:       []byte,
