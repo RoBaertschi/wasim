@@ -45,8 +45,6 @@ Read_Ctx :: struct {
 	data: []byte, // slice inside file (does not need to be the whole file)
 	digs: Diagnostic_List,
 
-	file: string,
-	errors: int,
 	m: ^Module,
 }
 
@@ -516,11 +514,6 @@ errorf :: proc(ctx: ^Read_Ctx, range: Byte_Range, format: string, args: ..any) {
 	}
 
 	diag_list_push(reader_arena(ctx), &ctx.digs, diag)
-
-	ctx.errors += 1
-
-	fmt.printf("%v:%v: WASM Binary Error: ", ctx.file, range.start)
-	fmt.printfln(format, ..args)
 }
 
 reader_absolute_pos :: proc(ctx: ^Read_Ctx) -> int {
@@ -935,7 +928,6 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 	ctx  := B.arena_push(temp, Read_Ctx)
 
 	ctx.data = data
-	ctx.file = file
 
 	if B.lane_idx() == 0 {
 		ctx.m        = B.arena_bootstrap_new(Module, "arena")
@@ -1083,6 +1075,7 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 				proc(ctx: ^Read_Ctx) -> (local: Local, ok: bool) {
 					local.repeat = read_u32_leb(ctx) or_return
 					local.type   = read_value_type(ctx) or_return
+					ok = true
 					return
 				},
 			)
@@ -1097,7 +1090,45 @@ read_module :: proc(data: []byte, file: string) -> (ok: bool) {
 
 	B.lane_sync()
 
+	ctxs: []^Read_Ctx
+
 	if B.lane_idx() == 0 {
+		ctxs = B.arena_push_make(temp, []^Read_Ctx, B.lane_count())
+	}
+
+	ctxs_ptr: [^]^Read_Ctx = raw_data(ctxs)
+	B.lane_sync_value(&ctxs_ptr, 0)
+
+	ctxs_ptr[B.lane_idx()] = ctx
+
+	B.lane_sync()
+
+	if B.lane_idx() == 0 {
+		all_diags_count := 0
+
+		for lane_ctx in ctxs {
+			all_diags_count += lane_ctx.digs.count
+		}
+
+		all_diags := B.arena_push_slice(temp, []Diagnostic, all_diags_count)
+
+		offset := 0
+		if 0 < all_diags_count {
+			for lane_ctx in ctxs {
+				for current := lane_ctx.digs.first; current != nil; current = current.next {
+					all_diags[offset] = current.diag
+					offset += 1
+				}
+			}
+		}
+
+		if 0 < all_diags_count {
+			fmt.eprintfln("malformed module, found %v errors:", all_diags_count)
+			for diag in all_diags {
+				fmt.eprintfln("%v:%v-%v:Error: %v", file, diag.range.start, diag.range.end, diag.error)
+			}
+		}
+
 		fmt.printfln("found module with version %v", m.version)
 		for section in m.sections {
 			fmt.printfln("found section of type %q: %v", section.kind, section)

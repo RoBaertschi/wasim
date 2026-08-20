@@ -31,6 +31,21 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (expr: Expr, ok: bool) {
 		return
 	}
 
+	ib_push_extra_u32 :: proc(ib: ^Instruction_Builder, value: u32) -> (pos: u32) {
+		pos = ib_push_extra_value(ib, value)
+		return
+	}
+
+	ib_push_extra_u64 :: proc(ib: ^Instruction_Builder, value: u64) -> (pos: u32) {
+		pos = ib_push_extra_value(ib, value)
+		return
+	}
+
+	ib_push_extra_f64 :: proc(ib: ^Instruction_Builder, value: f64) -> (pos: u32) {
+		pos = ib_push_extra_value(ib, value)
+		return
+	}
+
 	ib_push_extra_block_type :: proc(ib: ^Instruction_Builder, value_types: []Value_Type) -> (pos: u32) {
 		assert(len(value_types) < bits.U8_MAX)
 		pos = ib_push_extra_value(ib, byte(len(value_types)))
@@ -40,8 +55,11 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (expr: Expr, ok: bool) {
 	}
 
 	ib_push_extra :: proc{
+		ib_push_extra_u32,
+		ib_push_extra_u64,
+		ib_push_extra_f64,
+		ib_push_extra_block_type,
 		ib_push_extra_bytes,
-		ib_push_extra_value,
 	}
 
 	ib: Instruction_Builder
@@ -137,7 +155,7 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (expr: Expr, ok: bool) {
 					} else {
 						if_last_pos = 0
 					}
-					ib_push_extra(ib, if_last_pos)
+					ib_push_extra(ib, u32(if_last_pos))
 				}
 
 			case .Br, .Br_If:
@@ -209,7 +227,7 @@ read_expr :: proc(ctx: ^Read_Ctx) -> (expr: Expr, ok: bool) {
 			case .I64_Const:
 				// read constant
 				constant: u64
-				constant, ok = as(u64, read_u64_leb(ctx))
+				constant, ok = as(u64, read_i64_leb(ctx))
 				if ok {
 					inst.extra = ib_push_extra(ib, constant)
 				}

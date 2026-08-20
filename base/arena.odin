@@ -30,6 +30,11 @@ oom :: proc(err := mem.Allocator_Error.Out_Of_Memory) -> ! {
 }
 
 arena_alloc :: proc(commited: uint = 0, reserved: uint = runtime.Gigabyte * 2, flags: Arena_Flags = {}) -> ^Arena {
+	commited := commited
+	reserved := reserved
+	commited  = mem.align_forward_uint(commited, uint(mem.PAGE_SIZE))
+	reserved  = mem.align_forward_uint(reserved, uint(mem.PAGE_SIZE))
+
 	a := Arena {
 		used             = 0,
 		reserved         = reserved,
