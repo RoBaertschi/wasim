@@ -58,6 +58,16 @@ xar_chunk_cap :: #force_inline proc(array: ^xar.Array($T, $SHIFT), index_in_chun
 	return chunk_cap
 }
 
+// Slices
+
+slice_map_into :: proc(from: $F/[]$FE, into: $I/[]$IE, mapper: proc(item: FE) -> IE) {
+	count := min(len(from), len(into))
+	#no_bounds_check for i in 0..<count {
+		into[i] = mapper(from[i])
+	}
+}
+
+// Ranges
 
 Rng1 :: struct($T: typeid) {
 	start, end: T,
@@ -79,3 +89,6 @@ rng1 :: proc(start, end: $T) -> (result: Rng1(T)) {
 	return
 }
 
+rng1_slice_map_into :: proc(range: Rng1($T), from: $F/[]$FE, into: $I/[]$IE, mapper: proc(item: FE) -> IE) {
+	slice_map_into(rng1_slice(range, from), rng1_slice(range, into), mapper)
+}

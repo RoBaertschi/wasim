@@ -1,6 +1,6 @@
 package wasim_base
 
-import "core:mem"
+@require import "core:mem"
 import "core:sync"
 import "base:runtime"
 
@@ -38,8 +38,7 @@ lane_range :: proc(values_count: int) -> (result: Rng1(int)) {
 }
 
 lane_range_slice :: proc(slice: $S/[]$E) -> S {
-	range := lane_range(len(slice))
-	return slice[range.start:range.end]
+	return rng1_slice(lane_range(len(slice)), slice)
 }
 
 lane_sync_value :: proc(ptr: ^$T, src_lane_idx: int) where size_of(T) <= size_of(u128) {

@@ -1,12 +1,10 @@
 package wasim
 
-import "core:os"
+import "core:slice"
 import "core:fmt"
 import "core:sync"
-import "core:flags"
 import "core:thread"
 import "core:strings"
-import "core:sys/info"
 import "core:encoding/varint"
 
 import "base:runtime"
@@ -40,10 +38,10 @@ diag_list_push :: proc(a: ^B.Arena, l: ^Diagnostic_List, diag: Diagnostic) {
 }
 
 Read_Ctx :: struct {
-	base: int,    // base offset into file
-	curr: int,    // current offset into data
-	data: []byte, // slice inside file (does not need to be the whole file)
-	digs: Diagnostic_List,
+	base:  int,    // base offset into file
+	curr:  int,    // current offset into data
+	data:  []byte, // slice inside file (does not need to be the whole file)
+	diags: Diagnostic_List,
 
 	arena: ^B.Arena,
 }
@@ -145,7 +143,7 @@ errorf :: proc(ctx: ^Read_Ctx, range: Byte_Range, format: string, args: ..any) {
 		range = range,
 	}
 
-	diag_list_push(reader_arena(ctx), &ctx.digs, diag)
+	diag_list_push(reader_arena(ctx), &ctx.diags, diag)
 }
 
 reader_absolute_pos :: proc(ctx: ^Read_Ctx) -> int {
@@ -555,225 +553,9 @@ read_data_section :: proc(ctx: ^Read_Ctx) -> (datas: []Data, ok: bool) {
 	return
 }
 
-read_module :: proc(data: []byte, file: string) -> (ok: bool) {
-	temp := B.TEMP_ALLOCATOR_GUARD()
-	ctx  := B.arena_push(temp, Read_Ctx)
-
-	ctx.data = data
-
-	if B.lane_idx() == 0 {
-		ctx.m        = B.arena_bootstrap_new(Bin_Module, "arena")
-		ctx.m.arenas = B.arena_push_make(ctx.m.arena, []^B.Arena, B.lane_count())
-	}
-
-	B.lane_sync_value(&ctx.m, 0)
-
-	ctx.m.arenas[B.lane_idx()] = B.arena_alloc(commited = runtime.Kilobyte * 2)
-
-	code_section_index := -1
-
-	if B.lane_idx() == 0 {
-		T.ZoneN("Read Module Header")
-
-		anchor := reader_anchor(ctx)
-
-		// read magic number
-		magic: u32
-		magic, ok = read_u32(ctx)
-		if ok {
-			if magic == BIN_MAGIC {
-				ok = true
-			} else {
-				ok = false
-				errorf(ctx, reader_anchor_range(ctx, anchor), "invalid magic number %v, expected %v", magic, BIN_MAGIC)
-			}
-		}
-
-		anchor = reader_anchor(ctx)
-
-		// read version number
-		if ok {
-			ctx.m.version, ok = read_u32(ctx)
-			if ctx.m.version == BIN_SUPPORTED_VERSION {
-				ok = true
-			} else {
-				ok = false
-				errorf(ctx, reader_anchor_range(ctx, anchor), "unsupported WASM version %v, currently only WASM 1.0 is supported", ctx.m.version)
-			}
-		}
-
-		// fast-collect all sections for parallel processing
-		section_list: Section_List
-		if ok {
-			for ctx.curr < len(ctx.data) {
-				start := reader_anchor(ctx)
-
-				section := Bin_Section{
-					pos = ctx.curr,
-				}
-
-				section.kind, ok = read_t(ctx, Bin_Section_Kind)
-				if !ok {
-					break
-				}
-
-				ok = u8(section.kind) <= u8(max(Bin_Section_Kind))
-				if !ok {
-					errorf(ctx, reader_anchor_range(ctx, start), "invalid section kind %d, expected 0..=%v", u8(section.kind), u8(max(Bin_Section_Kind)))
-					break
-				}
-
-				size: int
-				size, ok = as(int, read_u32_leb(ctx))
-				if !ok {
-					break
-				}
-
-				section.data, ok = read_bytes(ctx, size)
-				if !ok {
-					break
-				}
-
-				node         := B.arena_push(ctx.m.arena, Bin_Section_Node)
-				node.section  = section
-				list_push(&section_list, node)
-			}
-		}
-
-		// collect all sections into a linear array
-		if ok {
-			ctx.m.sections = B.arena_push_make(ctx.m.arena, []Bin_Section, section_list.count)
-
-			i := 0
-			for current := section_list.first; current != nil; current = current.next {
-				ctx.m.sections[i] = current.section
-
-				if current.section.kind == .Code {
-					code_section_index = i
-				}
-
-				i += 1
-			}
-		}
-	}
-
-	B.lane_sync_value(&ok, 0)
-
-	if !ok {
-		return
-	}
-
-	B.lane_sync_value(&code_section_index, 0)
-
-	m := ctx.m
-
-	section_rng := B.lane_range(len(m.sections))
-	for i in section_rng.start..<section_rng.end {
-		T.ZoneN("Read Section")
-
-		section := m.sections[i]
-		defer m.sections[i] = section
-
-		reader_set_scope(ctx, section.pos, section.data)
-
-		// we do not care about ok==false, because we will not handle ok but instead look at the diagnostic list
-		switch section.kind {
-		case .Custom: // do nothing
-		case .Type:     section.types,     _ = read_type_section(ctx)
-		case .Import:   section.imps,      _ = read_import_section(ctx)
-		case .Function: section.functions, _ = read_func_section(ctx)
-		case .Table:    section.tables,    _ = read_table_section(ctx)
-		case .Memory:   section.memory,    _ = read_memory_section(ctx)
-		case .Global:   section.globals,   _ = read_global_section(ctx)
-		case .Export:   section.exports,   _ = read_export_section(ctx)
-		case .Start:    section.start,     _ = read_u32_leb(ctx)
-		case .Element:  section.elements,  _ = read_element_section(ctx)
-		case .Code:     section.codes,     _ = read_code_section_structure(ctx)
-		case .Data:     section.datas,     _ = read_data_section(ctx)
-		}
-	}
-
-	B.lane_sync()
-
-	if 0 <= code_section_index {
-		code_section := &ctx.m.sections[code_section_index]
-		code_rng     := B.lane_range(len(code_section.codes))
-		for i in code_rng.start..<code_rng.end {
-			code := code_section.codes[i]
-			reader_set_scope(ctx, code.pos, code.data)
-
-			code.locals, ok = read_vec(
-				ctx,
-				proc(ctx: ^Read_Ctx) -> (local: Local, ok: bool) {
-					local.repeat = read_u32_leb(ctx) or_return
-					local.type   = read_value_type(ctx) or_return
-					ok = true
-					return
-				},
-			)
-
-			if ok {
-				code.expr, _ = read_expr(ctx)
-			}
-
-			code_section.codes[i] = code
-		}
-	}
-
-	B.lane_sync()
-
-	ctxs: []^Read_Ctx
-
-	if B.lane_idx() == 0 {
-		ctxs = B.arena_push_make(temp, []^Read_Ctx, B.lane_count())
-	}
-
-	ctxs_ptr: [^]^Read_Ctx = raw_data(ctxs)
-	B.lane_sync_value(&ctxs_ptr, 0)
-
-	ctxs_ptr[B.lane_idx()] = ctx
-
-	B.lane_sync()
-
-	if B.lane_idx() == 0 {
-		all_diags_count := 0
-
-		for lane_ctx in ctxs {
-			all_diags_count += lane_ctx.digs.count
-		}
-
-		all_diags := B.arena_push_slice(temp, []Diagnostic, all_diags_count)
-
-		offset := 0
-		if 0 < all_diags_count {
-			for lane_ctx in ctxs {
-				for current := lane_ctx.digs.first; current != nil; current = current.next {
-					all_diags[offset] = current.diag
-					offset += 1
-				}
-			}
-		}
-
-		if 0 < all_diags_count {
-			fmt.eprintfln("malformed module, found %v errors:", all_diags_count)
-			for diag in all_diags {
-				fmt.eprintfln("%v:%v-%v:Error: %v", file, diag.range.start, diag.range.end, diag.error)
-			}
-		}
-
-		fmt.printfln("found module with version %v", m.version)
-		for section in m.sections {
-			fmt.printfln("found section of type %q: %v", section.kind, section)
-		}
-	}
-
-	B.lane_sync()
-
-	return
-}
-
 bin_scan_module :: proc(ctx: ^Read_Ctx) -> (m: ^Bin_Module, ok: bool) {
 	m = B.arena_push(ctx.arena, Bin_Module)
+	m.code_section_index = -1
 
 	T.ZoneN("Read Module Header")
 
@@ -882,7 +664,39 @@ bin_read_section_into_module :: proc(ctx: ^Read_Ctx, section: Bin_Section, m: ^M
 }
 
 bin_read_code :: proc(ctx: ^Read_Ctx, bin_code: Bin_Code) -> (code: Code, ok: bool) {
-	reader_set_scope()
+	reader_set_scope(ctx, bin_code.pos, bin_code.data)
+
+	code.locals, ok = read_vec(
+		ctx,
+		proc(ctx: ^Read_Ctx) -> (local: Local, ok: bool) {
+			local.repeat = read_u32_leb(ctx) or_return
+			local.type   = read_value_type(ctx) or_return
+			ok = true
+			return
+		},
+	)
+
+	if ok {
+		code.expr, ok = read_expr(ctx)
+	}
+
+	return
+}
+
+bin_collect_diagnostics :: proc(arena: ^B.Arena, ctxs: []Read_Ctx) -> (diags: []Diagnostic) {
+	diags_count := slice.reduce(ctxs, 0, proc(sum: int, ctx: Read_Ctx) -> int { return sum + ctx.diags.count })
+
+	diags = B.arena_push_make(arena, []Diagnostic, diags_count)
+
+	i: int
+	for ctx in ctxs {
+		for current := ctx.diags.first; current != nil; current = current.next {
+			diags[i]  = current.diag
+			i        += 1
+		}
+	}
+
+	return
 }
 
 Thread_Data :: struct {
@@ -890,26 +704,10 @@ Thread_Data :: struct {
 	thread: ^thread.Thread,
 	data: []byte,
 	file: string,
-	ctx: Read_Ctx,
 	module: ^Module,
+	diags: ^[]Diagnostic,
+	arenas: []^B.Arena,
 	done: ^sync.One_Shot_Event,
-}
-
-read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
-	tdata := (^Thread_Data)(t.data)
-
-	B.lane_select_ctx(tdata.lane_ctx)
-
-	temp := B.TEMP_ALLOCATOR_GUARD()
-	T.SetThreadName(strings.clone_to_cstring(t.name.?, allocator = temp) if t.name != nil else "")
-
-	B.lane_sync()
-
-	read_module(tdata.data, tdata.file)
-
-	if B.lane_idx() == 0 {
-		sync.one_shot_event_signal(tdata.done)
-	}
 }
 
 @private
@@ -921,18 +719,32 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 
 	B.lane_select_ctx(tdata.lane_ctx)
 
+	lane := B.lane_idx()
+
 	temp := B.TEMP_ALLOCATOR_GUARD()
 	T.SetThreadName(strings.clone_to_cstring(t.name.?, allocator = temp) if t.name != nil else "")
 
 	B.lane_sync()
+	
+	ctxs: []Read_Ctx
 
-	ctx := &tdata.ctx
+	if lane == 0 {
+		ctxs = B.arena_push_make(temp, []Read_Ctx, B.lane_count())
+	}
+
+	B.lane_sync_value(&ctxs, 0)
+
+	ctxs[lane].arena = tdata.arenas[lane]
+
+	ctx := &ctxs[lane]
 
 	bin_module: ^Bin_Module
 
 	ok: bool
-	if B.lane_idx() == 0 {
+	if lane == 0 {
+		reader_set_scope(ctx, 0, tdata.data)
 		bin_module, ok = bin_scan_module(ctx)
+		tdata.module.version = bin_module.version
 	}
 
 	B.lane_sync_value(&ok, 0)
@@ -943,9 +755,10 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 
 	B.lane_sync_value(&bin_module, 0)
 
-	section_rng := B.lane_range(len(bin_module.sections))
-	for i in section_rng.start..<section_rng.end {
-		bin_read_section_into_module(ctx, bin_module.sections[i], tdata.module)
+	for bin_section in B.lane_range_slice(bin_module.sections) {
+		if bin_section.kind != .Code {
+			_ = bin_read_section_into_module(ctx, bin_section, tdata.module)
+		}
 	}
 
 	B.lane_sync()
@@ -957,7 +770,7 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 
 		bin_codes: []Bin_Code
 
-		if B.lane_idx() == 0 {
+		if lane == 0 {
 			bin_codes, ok = read_code_section_structure(ctx, temp)
 
 			if ok {
@@ -972,27 +785,15 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 
 			bin_code_rng := B.lane_range(len(bin_codes))
 			for i in bin_code_rng.start..<bin_code_rng.end {
-				bin_code := bin_codes[i]
-				reader_set_scope(ctx, bin_code.pos, bin_code.data)
-
-				code: Code
-				defer tdata.module.codes[i] = code
-
-				code.locals, ok = read_vec(
-					ctx,
-					proc(ctx: ^Read_Ctx) -> (local: Local, ok: bool) {
-						local.repeat = read_u32_leb(ctx) or_return
-						local.type   = read_value_type(ctx) or_return
-						ok = true
-						return
-					},
-				)
-
-				if ok {
-					code.expr, _ = read_expr(ctx)
-				}
+				tdata.module.codes[i], _ = bin_read_code(ctx, bin_codes[i])
 			}
 		}
+	}
+
+	B.lane_sync()
+
+	if lane == 0 {
+		tdata.diags^ = bin_collect_diagnostics(ctx.arena, ctxs)
 	}
 
 	B.lane_sync()
@@ -1018,16 +819,13 @@ bin_read :: proc(data: []byte, file_name: string, thread_arenas: []^B.Arena) -> 
 		tdata.lane_ctx.shared_memory = &lane_shared_memory
 
 		tdata.module = &module
+		tdata.diags  = &diags
+		tdata.arenas = thread_arenas
 		tdata.done = &done_one_shot_event
 		tdata.data = data
 		tdata.file = file_name
 
-		tdata.ctx = {
-			data  = data,
-			arena = thread_arenas[i],
-		}
-
-		tdata.thread = thread.create(read_entry_point, name = fmt.aprintf("wasim_%v", i, allocator = temp))
+		tdata.thread = thread.create(bin_read_entry_point, name = fmt.aprintf("wasim_%v", i, allocator = temp))
 		tdata.thread.data = &tdata
 	}
 
@@ -1042,68 +840,4 @@ bin_read :: proc(data: []byte, file_name: string, thread_arenas: []^B.Arena) -> 
 	}
 
 	return
-}
-
-main :: proc() {
-	B.inst_begin_profile()
-	defer B.inst_end_profile()
-
-	Cmd :: struct {
-		input_module: ^os.File `args:"pos=0,required"`,
-		thread_count: int,
-	}
-
-	cmd: Cmd
-
-	flags.parse_or_exit(&cmd, os.args, allocator = context.temp_allocator)
-
-	data, err := os.read_entire_file(cmd.input_module, context.temp_allocator)
-	if err == nil {
-		T.ZoneN("Init")
-
-		temp := B.TEMP_ALLOCATOR_GUARD()
-
-		thread_count: int
-		if cmd.thread_count == 0 {
-			// try to infer virtual core count
-			physical_core_count, virtual_core_count, _ := info.cpu_core_count()
-			thread_count = virtual_core_count if virtual_core_count != 0 else physical_core_count
-		}
-
-		thread_count = max(1, thread_count)
-
-
-		lane_shared_memory: u64
-		barrier: sync.Barrier
-		done_one_shot_event: sync.One_Shot_Event
-		sync.barrier_init(&barrier, thread_count)
-		per_thread_tdata := B.arena_push_make(temp, []Thread_Data, thread_count)
-
-		for &tdata, i in per_thread_tdata {
-			tdata.lane_ctx.index = i
-			tdata.lane_ctx.count = thread_count
-			tdata.lane_ctx.barrier = &barrier
-			tdata.lane_ctx.shared_memory = &lane_shared_memory
-
-			tdata.done = &done_one_shot_event
-
-			tdata.data = data
-			tdata.file = os.name(cmd.input_module)
-
-			tdata.thread = thread.create(read_entry_point, name = fmt.aprintf("wasim_%v", i, allocator = temp))
-			tdata.thread.data = &tdata
-		}
-
-		for tdata in per_thread_tdata {
-			thread.start(tdata.thread)
-		}
-
-		sync.one_shot_event_wait(&done_one_shot_event)
-
-		for tdata in per_thread_tdata {
-			thread.join(tdata.thread)
-		}
-	} else {
-		fmt.eprintfln("could not read file %q: %v", os.name(cmd.input_module), err)
-	}
 }
