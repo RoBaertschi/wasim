@@ -17,22 +17,22 @@ import T "tracy"
 BIN_MAGIC   :: u32(0x6D736100)
 BIN_SUPPORTED_VERSION :: u32(1)
 
-Byte_Range :: B.Rng1(int)
+Bin_Byte_Range :: B.Rng1(int)
 
-Diagnostic :: struct {
+Bin_Diagnostic :: struct {
 	error: string,
-	range: Byte_Range,
+	range: Bin_Byte_Range,
 }
 
-Diagnostic_Node :: struct {
-	next: ^Diagnostic_Node,
-	diag: Diagnostic,
+Bin_Diagnostic_Node :: struct {
+	next: ^Bin_Diagnostic_Node,
+	diag: Bin_Diagnostic,
 }
 
-Diagnostic_List :: distinct List(Diagnostic_Node)
+Bin_Diagnostic_List :: distinct List(Bin_Diagnostic_Node)
 
-diag_list_push :: proc(a: ^B.Arena, l: ^Diagnostic_List, diag: Diagnostic) {
-	node      := B.arena_push(a, Diagnostic_Node)
+bin_diag_list_push :: proc(a: ^B.Arena, l: ^Bin_Diagnostic_List, diag: Bin_Diagnostic) {
+	node      := B.arena_push(a, Bin_Diagnostic_Node)
 	node.diag  = diag
 	list_push(l, node)
 }
@@ -41,7 +41,7 @@ Bin_Read_Ctx :: struct {
 	base:  int,    // base offset into file
 	curr:  int,    // current offset into data
 	data:  []byte, // slice inside file (does not need to be the whole file)
-	diags: Diagnostic_List,
+	diags: Bin_Diagnostic_List,
 
 	arena: ^B.Arena,
 }
@@ -137,13 +137,13 @@ bin_reader_allocator :: proc(ctx: ^Bin_Read_Ctx) -> runtime.Allocator {
 	return B.arena_allocator(bin_reader_arena(ctx))
 }
 
-bin_errorf :: proc(ctx: ^Bin_Read_Ctx, range: Byte_Range, format: string, args: ..any) {
-	diag := Diagnostic {
+bin_errorf :: proc(ctx: ^Bin_Read_Ctx, range: Bin_Byte_Range, format: string, args: ..any) {
+	diag := Bin_Diagnostic {
 		error = fmt.aprintf(format, ..args, allocator = bin_reader_allocator(ctx)),
 		range = range,
 	}
 
-	diag_list_push(bin_reader_arena(ctx), &ctx.diags, diag)
+	bin_diag_list_push(bin_reader_arena(ctx), &ctx.diags, diag)
 }
 
 bin_reader_absolute_pos :: proc(ctx: ^Bin_Read_Ctx) -> int {
@@ -152,7 +152,7 @@ bin_reader_absolute_pos :: proc(ctx: ^Bin_Read_Ctx) -> int {
 
 bin_reader_anchor :: bin_reader_absolute_pos
 
-bin_reader_anchor_range :: proc(ctx: ^Bin_Read_Ctx, anchor: int) -> (result: Byte_Range) {
+bin_reader_anchor_range :: proc(ctx: ^Bin_Read_Ctx, anchor: int) -> (result: Bin_Byte_Range) {
 	result.start = anchor
 	result.end   = bin_reader_anchor(ctx)
 	assert(result.start <= result.end)
@@ -683,10 +683,10 @@ bin_read_code :: proc(ctx: ^Bin_Read_Ctx, bin_code: Bin_Code) -> (code: Code, ok
 	return
 }
 
-bin_collect_diagnostics :: proc(arena: ^B.Arena, ctxs: []Bin_Read_Ctx) -> (diags: []Diagnostic) {
+bin_collect_diagnostics :: proc(arena: ^B.Arena, ctxs: []Bin_Read_Ctx) -> (diags: []Bin_Diagnostic) {
 	diags_count := slice.reduce(ctxs, 0, proc(sum: int, ctx: Bin_Read_Ctx) -> int { return sum + ctx.diags.count })
 
-	diags = B.arena_push_make(arena, []Diagnostic, diags_count)
+	diags = B.arena_push_make(arena, []Bin_Diagnostic, diags_count)
 
 	i: int
 	for ctx in ctxs {
@@ -705,7 +705,7 @@ Bin_Thread_Data :: struct {
 	data: []byte,
 	file: string,
 	module: ^Module,
-	diags: ^[]Diagnostic,
+	diags: ^[]Bin_Diagnostic,
 	arenas: []^B.Arena,
 	done: ^sync.One_Shot_Event,
 }
@@ -799,7 +799,7 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 	B.lane_sync()
 }
 
-bin_read :: proc(data: []byte, file_name: string, thread_arenas: []^B.Arena) -> (module: Module, diags: []Diagnostic) {
+bin_read :: proc(data: []byte, file_name: string, thread_arenas: []^B.Arena) -> (module: Module, diags: []Bin_Diagnostic) {
 	assert(0 < len(thread_arenas))
 
 	temp := B.TEMP_ALLOCATOR_GUARD()
