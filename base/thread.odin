@@ -8,7 +8,7 @@ Lane_Ctx :: struct {
 	index:   int,
 	count:   int,
 	barrier: ^sync.Barrier,
-	shared_memory: ^u64,
+	shared_memory: ^u128,
 }
 
 Thread_Ctx :: struct {
@@ -37,7 +37,12 @@ lane_range :: proc(values_count: int) -> (result: Rng1(int)) {
 	return
 }
 
-lane_sync_value :: proc(ptr: ^$T, src_lane_idx: int) where size_of(T) <= size_of(u64) {
+lane_range_slice :: proc(slice: $S/[]$E) -> S {
+	range := lane_range(len(slice))
+	return slice[range.start:range.end]
+}
+
+lane_sync_value :: proc(ptr: ^$T, src_lane_idx: int) where size_of(T) <= size_of(u128) {
 	if lane_idx() == src_lane_idx {
 		mem.copy(thread_ctx.lane_ctx.shared_memory, ptr, size_of(T))
 	}

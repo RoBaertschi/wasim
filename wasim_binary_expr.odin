@@ -6,62 +6,62 @@ import "core:container/xar"
 
 import B "base"
 
+Instruction_Builder :: struct {
+	instructions: xar.Array(Instruction, 6),
+	extras:        xar.Array(byte, 8),
+}
+
+ib_push :: proc(ib: ^Instruction_Builder, opcode: Instruction_Opcode) -> (inst: ^Instruction, pos: u32) {
+	pos     = u32(xar.len(ib.instructions))
+	inst, _ = xar.push_back_elem_and_get_ptr(&ib.instructions, Instruction { opcode = opcode })
+	return
+}
+
+ib_push_extra_bytes :: proc(ib: ^Instruction_Builder, bytes: []byte) -> (pos: u32) {
+	pos = u32(xar.len(ib.extras))
+	xar.push_back(&ib.extras, ..bytes)
+	return
+}
+
+ib_push_extra_value :: proc(ib: ^Instruction_Builder, value: $T) -> (pos: u32) {
+	value := value
+	value_bytes := transmute([size_of(T)]byte)value
+	pos = ib_push_extra_bytes(ib, value_bytes[:])
+	return
+}
+
+ib_push_extra_u32 :: proc(ib: ^Instruction_Builder, value: u32) -> (pos: u32) {
+	pos = ib_push_extra_value(ib, value)
+	return
+}
+
+ib_push_extra_u64 :: proc(ib: ^Instruction_Builder, value: u64) -> (pos: u32) {
+	pos = ib_push_extra_value(ib, value)
+	return
+}
+
+ib_push_extra_f64 :: proc(ib: ^Instruction_Builder, value: f64) -> (pos: u32) {
+	pos = ib_push_extra_value(ib, value)
+	return
+}
+
+ib_push_extra_block_type :: proc(ib: ^Instruction_Builder, value_types: []Value_Type) -> (pos: u32) {
+	assert(len(value_types) < bits.U8_MAX)
+	pos = ib_push_extra_value(ib, byte(len(value_types)))
+
+	ib_push_extra_bytes(ib, slice.reinterpret([]byte, value_types))
+	return
+}
+
+ib_push_extra :: proc{
+	ib_push_extra_u32,
+	ib_push_extra_u64,
+	ib_push_extra_f64,
+	ib_push_extra_block_type,
+	ib_push_extra_bytes,
+}
+
 read_expr :: proc(ctx: ^Read_Ctx) -> (expr: Expr, ok: bool) {
-	Instruction_Builder :: struct {
-		instructions: xar.Array(Instruction, 6),
-		extras:        xar.Array(byte, 8),
-	}
-
-	ib_push :: proc(ib: ^Instruction_Builder, opcode: Instruction_Opcode) -> (inst: ^Instruction, pos: u32) {
-		pos     = u32(xar.len(ib.instructions))
-		inst, _ = xar.push_back_elem_and_get_ptr(&ib.instructions, Instruction { opcode = opcode })
-		return
-	}
-
-	ib_push_extra_bytes :: proc(ib: ^Instruction_Builder, bytes: []byte) -> (pos: u32) {
-		pos = u32(xar.len(ib.extras))
-		xar.push_back(&ib.extras, ..bytes)
-		return
-	}
-
-	ib_push_extra_value :: proc(ib: ^Instruction_Builder, value: $T) -> (pos: u32) {
-		value := value
-		value_bytes := transmute([size_of(T)]byte)value
-		pos = ib_push_extra_bytes(ib, value_bytes[:])
-		return
-	}
-
-	ib_push_extra_u32 :: proc(ib: ^Instruction_Builder, value: u32) -> (pos: u32) {
-		pos = ib_push_extra_value(ib, value)
-		return
-	}
-
-	ib_push_extra_u64 :: proc(ib: ^Instruction_Builder, value: u64) -> (pos: u32) {
-		pos = ib_push_extra_value(ib, value)
-		return
-	}
-
-	ib_push_extra_f64 :: proc(ib: ^Instruction_Builder, value: f64) -> (pos: u32) {
-		pos = ib_push_extra_value(ib, value)
-		return
-	}
-
-	ib_push_extra_block_type :: proc(ib: ^Instruction_Builder, value_types: []Value_Type) -> (pos: u32) {
-		assert(len(value_types) < bits.U8_MAX)
-		pos = ib_push_extra_value(ib, byte(len(value_types)))
-
-		ib_push_extra_bytes(ib, slice.reinterpret([]byte, value_types))
-		return
-	}
-
-	ib_push_extra :: proc{
-		ib_push_extra_u32,
-		ib_push_extra_u64,
-		ib_push_extra_f64,
-		ib_push_extra_block_type,
-		ib_push_extra_bytes,
-	}
-
 	ib: Instruction_Builder
 
 	temp := B.TEMP_ALLOCATOR_GUARD()
