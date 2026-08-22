@@ -100,7 +100,7 @@ tex_tok_is_id_char :: #force_inline proc(ch: rune) -> bool {
 	}
 }
 
-tex_tok_is_valid_reserved :: proc(s: string) -> (valid: bool) {
+tex_tok_is_reserved :: proc(s: string) -> (valid: bool) {
 	valid = true
 	for r in s {
 		if !tex_tok_is_id_char(r) {
@@ -375,6 +375,24 @@ tex_tok_read_number_like :: proc(s: string) -> (kind: Token_Kind) {
 	return
 }
 
+tex_tok_is_identifier :: proc(s: string) -> (valid: bool) {
+	if strings.starts_with(s, "$") {
+		i := 0
+		for r in s {
+			if !tex_tok_is_id_char(r) {
+				break
+			}
+			i += 1
+		}
+
+		if i == len(s) && 2 <= len(s) { // is token fully matched and at least one id char after the $
+			valid = true
+		}
+	}
+
+	return
+}
+
 tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 	tex_tok_skip_space(t)
 
@@ -402,7 +420,7 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 		// try number first (nan, inf could interfere with other)
 		token.kind = tex_tok_read_number_like(token.data)
 		if token.kind != .Invalid {
-			break
+			return
 		}
 
 		index := tex_tok_perfect_hash_proc(token.data)
@@ -413,10 +431,17 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 			assert(.Keywords_Begin <= token.kind)
 			assert(token.kind      <= .Keywords_End)
 
-			break
+			return
 		}
 
-		is_reserved_token := tex_tok_is_valid_reserved(token.data)
+		if tex_tok_is_identifier(token.data) {
+			// identifier
+			token.kind = .Identifier
+			return
+		}
+
+
+		is_reserved_token := tex_tok_is_reserved(token.data)
 		_ = is_reserved_token
 		// NOTE(robin): the error should probably mention if it is a reserved token or not
 		// TODO(robin): error
@@ -475,7 +500,7 @@ tex_tok_skip_to_token_boundary_test :: proc(t: ^testing.T) {
 }
 
 @test
-tex_tok_is_valid_reserved_test_valid :: proc(t: ^testing.T) {
+tex_tok_is_reserved_test_valid :: proc(t: ^testing.T) {
 	valid_reserved_tokens := []string{
 		"0123456789",
 		"abcdefghijklmnopqrstuvwxyz",
@@ -484,12 +509,12 @@ tex_tok_is_valid_reserved_test_valid :: proc(t: ^testing.T) {
 	}
 
 	for valid in valid_reserved_tokens {
-		testing.expect(t, tex_tok_is_valid_reserved(valid))
+		testing.expect(t, tex_tok_is_reserved(valid))
 	}
 }
 
 @test
-tex_tok_is_valid_reserved_test_invalid :: proc(t: ^testing.T) {
+tex_tok_is_reserved_test_invalid :: proc(t: ^testing.T) {
 	invalid_reserved_token := []string{
 		"   ",
 		"öäü",
@@ -498,7 +523,7 @@ tex_tok_is_valid_reserved_test_invalid :: proc(t: ^testing.T) {
 	}
 
 	for invalid in invalid_reserved_token {
-		testing.expect(t, !tex_tok_is_valid_reserved(invalid))
+		testing.expect(t, !tex_tok_is_reserved(invalid))
 	}
 }
 
@@ -618,5 +643,36 @@ tex_tok_read_number_like_test_invalid :: proc(t: ^testing.T) {
 	for invalid in invalid_numbers {
 		kind := tex_tok_read_number_like(invalid)
 		testing.expect_value(t, kind, Token_Kind.Invalid)
+	}
+}
+
+@test
+tex_tok_is_identifier_test_valid :: proc(t: ^testing.T) {
+	valid_identifiers := []string{
+		"$helloworld",
+		"$$$$$$$$$$$$$$", // but why is this valid ????
+		"$!#$%&'*+-./:<=>?@\\^_`|~",
+		"$0123456789",
+	}
+
+	for valid in valid_identifiers {
+		testing.expect(t, tex_tok_is_identifier(valid))
+	}
+}
+
+@test
+tex_tok_is_identifier_test_invalid :: proc(t: ^testing.T) {
+	invalid_identifiers := []string{
+		"helloworld",
+		"$ ",
+		"$\"",
+		"$,",
+		"$;",
+		"${",
+		"$}",
+	}
+
+	for invalid in invalid_identifiers {
+		testing.expect(t, !tex_tok_is_identifier(invalid))
 	}
 }
