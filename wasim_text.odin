@@ -225,7 +225,27 @@ tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 					// TODO(robin): error
 					continue
 				}
-				unimplemented()
+
+				tex_tok_read_ch(t) // eat {
+
+				if !tex_tok_is_digit(t.ch, 16) {
+					token.kind = .Invalid
+					// TODO(robin): error
+					continue
+				}
+
+				for tex_tok_is_digit(t.ch, 16) {
+					tex_tok_read_ch(t) // eat digit
+				}
+
+				if t.ch != '}' {
+					token.kind = .Invalid
+					// TODO(robin): error
+					continue
+				}
+
+				tex_tok_read_ch(t) // eat }
+				continue
 			case: // invalid escape sequence
 				token.kind = .Invalid
 				// TODO(robin): error
@@ -251,7 +271,7 @@ tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 	return
 }
 
-tex_tok_is_digit :: proc(ch: byte, base: int) -> (valid: bool) {
+tex_tok_is_digit :: proc(ch: rune, base: int) -> (valid: bool) {
 	switch ch {
 	case '0'..='9': return true
 	case 'a'..='f',
@@ -268,7 +288,7 @@ tex_tok_read_number_like :: proc(s: string) -> (kind: Token_Kind) {
 	}
 
 	starts_with_digit :: proc(s: ^string, base: int) -> (result: bool) {
-		result = len(s) > 0 && tex_tok_is_digit(s[0], base)
+		result = len(s) > 0 && tex_tok_is_digit(rune(s[0]), base)
 		return
 	}
 
@@ -277,9 +297,9 @@ tex_tok_read_number_like :: proc(s: string) -> (kind: Token_Kind) {
 		if valid {
 			s^ = s[1:]
 			for len(s) > 0 {
-				if tex_tok_is_digit(s[0], base) {
+				if tex_tok_is_digit(rune(s[0]), base) {
 					s^ = s[1:]
-				} else if s[0] == '_' && len(s) > 1 && tex_tok_is_digit(s[1], base) {
+				} else if s[0] == '_' && len(s) > 1 && tex_tok_is_digit(rune(s[1]), base) {
 					s^ = s[2:]
 				} else {
 					break
@@ -320,8 +340,8 @@ tex_tok_read_number_like :: proc(s: string) -> (kind: Token_Kind) {
 
 				has_exponent, exponent_valid := read_exponent(
 					s,
-					base == 10 ? byte('e') : byte('p'),
-					base == 10 ? byte('E') : byte('P'),
+					base == 10 ? 'e' : 'p',
+					base == 10 ? 'E' : 'P',
 				)
 
 				consumed_all      := len(s) == 0
@@ -379,26 +399,27 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 		//              conceptually need to apply each rule
 		//              to see which one fits the longest
 
-		switch ch {
-		case 'a'..='z': // keyword
-			index := tex_tok_perfect_hash_proc(token.data)
-			if index < 0 {
-				// invalid keyword
-				// TODO(robin): error
-			} else {
-				// valid keyword
-				token.kind = Token_Kind(int(Token_Kind.Keywords_Begin) + index)
-				assert(.Keywords_Begin <= token.kind)
-				assert(token.kind      <= .Keywords_End)
-			}
-		case '-', '+', '0'..='9': // number like
-		case: // reserved
-			// check if even a valid reserved token (which in itself is invalid)
-			is_reserved_token := tex_tok_is_valid_reserved(token.data)
-			_ = is_reserved_token
-			// NOTE(robin): the error should probably mention if it is a reserved token or not
-			// TODO(robin): error
+		// try number first (nan, inf could interfere with other)
+		token.kind = tex_tok_read_number_like(token.data)
+		if token.kind != .Invalid {
+			break
 		}
+
+		index := tex_tok_perfect_hash_proc(token.data)
+
+		if 0 <= index {
+			// valid keyword
+			token.kind = Token_Kind(int(Token_Kind.Keywords_Begin) + index)
+			assert(.Keywords_Begin <= token.kind)
+			assert(token.kind      <= .Keywords_End)
+
+			break
+		}
+
+		is_reserved_token := tex_tok_is_valid_reserved(token.data)
+		_ = is_reserved_token
+		// NOTE(robin): the error should probably mention if it is a reserved token or not
+		// TODO(robin): error
 
 		return
 	}
@@ -485,7 +506,7 @@ tex_tok_is_valid_reserved_test_invalid :: proc(t: ^testing.T) {
 tex_tok_read_string_test_valid :: proc(t: ^testing.T) {
 	valid_strings := []string{
 		"\"hello world\"",
-		"\"\\t\\n\\r\\\"\\'\\\\\"", // TODO(robin): test \u{...}
+		"\"\\t\\n\\r\\\"\\'\\\\\\u{0189ABEFabef}\"", // TODO(robin): test \u{...}
 	}
 
 	for valid in valid_strings {
