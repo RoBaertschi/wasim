@@ -713,9 +713,6 @@ Bin_Thread_Data :: struct {
 @private
 bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 	tdata := (^Bin_Thread_Data)(t.data)
-	defer if B.lane_idx() == 0 {
-		sync.one_shot_event_signal(tdata.done)
-	}
 
 	B.lane_select_ctx(tdata.lane_ctx)
 
@@ -797,6 +794,10 @@ bin_read_entry_point : thread.Thread_Proc : proc(t: ^thread.Thread) {
 	}
 
 	B.lane_sync()
+
+	if lane == 0 {
+		sync.one_shot_event_signal(tdata.done)
+	}
 }
 
 bin_read :: proc(data: []byte, file_name: string, thread_arenas: []^B.Arena) -> (module: Module, diags: []Bin_Diagnostic) {
