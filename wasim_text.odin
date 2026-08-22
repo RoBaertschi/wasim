@@ -251,38 +251,107 @@ tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 	return
 }
 
+tex_tok_is_digit :: proc(ch: byte, base: int) -> (valid: bool) {
+	switch ch {
+	case '0'..='9': return true
+	case 'a'..='f',
+		   'A'..='F': return base == 16
+	case:           return false
+	}
+}
+
 tex_tok_read_number_like :: proc(s: string) -> (kind: Token_Kind) {
-	s := s
-
-	kind = .Integer
-
-	if 0 < len(s) {
-		switch s[0] {
-		case '-', '+': s = s[1:]
+	read_sign :: proc(s: ^string) {
+		if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
+			s^ = s[1:]
 		}
 	}
 
-	base := 10
-
-	if strings.starts_with(s, "0x") {
-		// hex mode
-		base = 16
-		s = s[2:]
+	starts_with_digit :: proc(s: ^string, base: int) -> (result: bool) {
+		result = len(s) > 0 && tex_tok_is_digit(s[0], base)
+		return
 	}
 
-	if strings.starts_with(s, "_") {
-		// TODO(robin): error
-		kind = .Invalid
-	}
-
-
-	if kind != .Invalid {
-		for r in s {
-			if r == '_' {
+	read_digits :: proc(s: ^string, base: int) -> (valid: bool) {
+		valid = starts_with_digit(s, base)
+		if valid {
+			s^ = s[1:]
+			for len(s) > 0 {
+				if tex_tok_is_digit(s[0], base) {
+					s^ = s[1:]
+				} else if s[0] == '_' && len(s) > 1 && tex_tok_is_digit(s[1], base) {
+					s^ = s[2:]
+				} else {
+					break
+				}
 			}
 		}
+		return
 	}
 
+	read_exponent :: proc(s: ^string, marker_lower, marker_upper: byte) -> (found, valid: bool) {
+		found = len(s) > 0 && (s[0] == marker_lower || s[0] == marker_upper)
+		if found {
+			s^ = s[1:]
+			read_sign(s)
+			valid = read_digits(s, 10)
+		}
+		return
+	}
+
+	read_regular :: proc(s: ^string) -> (kind: Token_Kind) {
+		base := 10
+		if strings.starts_with(s^, "0x") {
+			base = 16
+			s^ = s[2:]
+		}
+
+		digits_valid := read_digits(s, base)
+
+		if digits_valid {
+			if len(s) == 0 {
+				kind = .Integer
+			} else {
+				has_point := s[0] == '.'
+				if has_point {
+					s^ = s[1:]
+					_ = read_digits(s, base)
+				}
+
+				has_exponent, exponent_valid := read_exponent(
+					s,
+					base == 10 ? byte('e') : byte('p'),
+					base == 10 ? byte('E') : byte('P'),
+				)
+
+				consumed_all      := len(s) == 0
+				valid_exponent    := !has_exponent || exponent_valid
+				hex_has_exponent  := base == 10 || has_exponent
+				is_float_notation := has_point || has_exponent
+				if consumed_all && valid_exponent && hex_has_exponent && is_float_notation {
+					kind = .Float
+				}
+			}
+		}
+
+		return
+	}
+
+	rest := s
+	read_sign(&rest)
+	if len(rest) > 0 {
+		switch {
+		case rest == "inf", rest == "nan":
+			kind = .Float
+		case strings.starts_with(rest, "nan:0x"):
+			rest = rest[len("nan:0x"):]
+			if read_digits(&rest, 16) && len(rest) == 0 {
+				kind = .Float
+			}
+		case:
+			kind = read_regular(&rest)
+		}
+	}
 	return
 }
 
@@ -442,5 +511,91 @@ tex_tok_read_string_test_invalid :: proc(t: ^testing.T) {
 		tex_tok_init(&tok, valid, "test.wat")
 		token := tex_tok_read_string(&tok)
 		testing.expect_value(t, token.kind, Token_Kind.Invalid)
+	}
+}
+
+@test
+tex_tok_read_number_like_test_integer :: proc(t: ^testing.T) {
+	valid_integers := []string{
+		"0",
+		"123",
+		"+123",
+		"-123",
+		"1_000_000",
+		"0x0",
+		"0xdead_BEEF",
+		"+0x1234",
+		"-0x1_0000",
+	}
+
+	for valid in valid_integers {
+		kind := tex_tok_read_number_like(valid)
+		testing.expect_value(t, kind, Token_Kind.Integer)
+	}
+}
+
+@test
+tex_tok_read_number_like_test_float :: proc(t: ^testing.T) {
+	valid_floats := []string{
+		"0.",
+		"1.5",
+		"+1.5",
+		"-1.5",
+		"1e3",
+		"1.e+3",
+		"1_0.2_5e-2",
+		"0x1p0",
+		"0x1.p+2",
+		"0x1.8p-1",
+		"inf",
+		"+inf",
+		"-inf",
+		"nan",
+		"+nan",
+		"-nan",
+		"nan:0x1",
+		"+nan:0xabc_DEF",
+	}
+
+	for valid in valid_floats {
+		kind := tex_tok_read_number_like(valid)
+		testing.expect_value(t, kind, Token_Kind.Float)
+	}
+}
+
+@test
+tex_tok_read_number_like_test_invalid :: proc(t: ^testing.T) {
+	invalid_numbers := []string{
+		"",
+		"+",
+		"-",
+		"_1",
+		"1_",
+		"1__0",
+		"0x",
+		"0x_1",
+		"0x1_",
+		".",
+		".5",
+		"1e",
+		"1e+",
+		"1e_2",
+		"1e2_",
+		"1p2",
+		"0x1.",
+		"0x1p",
+		"0x1p+",
+		"0x1p_2",
+		"nan:0x",
+		"nan:0x_1",
+		"nan:0x1_",
+		"NaN",
+		"Infinity",
+		"1.2.3",
+	}
+
+	for invalid in invalid_numbers {
+		kind := tex_tok_read_number_like(invalid)
+		testing.expect_value(t, kind, Token_Kind.Invalid)
 	}
 }
