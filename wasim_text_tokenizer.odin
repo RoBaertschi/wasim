@@ -1156,12 +1156,12 @@ tex_tok_next_test :: proc(t: ^testing.T) {
 		input:  string,
 		tokens: []Token,
 	}{
-		{ "(func)", { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
-		{ "( func )", { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
+		{ "(func)",              { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
+		{ "( func )",            { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
 		{ "align=4 offset=0x10", { { kind = .Align_Equal_Natural, data = "align=4" }, { kind = .Offset_Equal_Natural, data = "offset=0x10" } } },
-		{ "align= 4", { { kind = .Invalid, data = "align=" }, { kind = .Integer_Unsigned, data = "4" } } },
-		{ "@",      { { kind = .Invalid, data = "@" } } },
-		{ " @@@$$ ",  { { kind = .Invalid, data = "@@@$$" } } },
+		{ "align= 4",            { { kind = .Invalid, data = "align=" }, { kind = .Integer_Unsigned, data = "4" } } },
+		{ "@",                   { { kind = .Invalid, data = "@" } } },
+		{ " @@@$$ ",             { { kind = .Invalid, data = "@@@$$" } } },
 	}
 
 	for test in tests {
