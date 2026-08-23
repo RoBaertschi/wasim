@@ -128,6 +128,8 @@ Element :: struct {
 // ## memarg
 // Align is a u32 followed by a u32 for the offset.
 Instruction_Opcode :: enum u8 {
+	Invalid = 0xFF, // Not assigned in WebAssembly Core 1.
+
 	// §5.4.1 Control Instructions
 	Unreachable   = 0x00,
 	Nop           = 0x01,
