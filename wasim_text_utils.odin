@@ -1,5 +1,6 @@
 package wasim
 
+import "core:math"
 import "base:intrinsics"
 import "core:fmt"
 import "core:unicode/utf8"
@@ -19,6 +20,90 @@ tex_integer_rune_value :: proc(r: rune) -> (i: int) {
 		fmt.panicf("unsupported rune in tex_integer_rune_value %q", r)
 	}
 	fail(r)
+}
+
+TEX_F64_NAN_SIGNIF :: math.F64_MANT_DIG-1 // amount of actual bits stored in the f64
+
+tex_f64_nan :: proc(payload: u64 = 1 << TEX_F64_NAN_SIGNIF-1) -> f64 {
+	payload := payload
+
+	assert(payload != 0)
+	assert(payload < 1 << TEX_F64_NAN_SIGNIF)
+	NAN_BASE :: 0x7ff00000_00000000
+
+	payload |= NAN_BASE
+	return transmute(f64)payload
+}
+
+TEX_F32_NAN_SIGNIF :: math.F32_MANT_DIG-1 // amount of actual bits stored in the f32
+
+tex_f32_nan :: proc(payload: u32 = 1 << TEX_F32_NAN_SIGNIF-1) -> f32 {
+	payload := payload
+
+	assert(payload != 0)
+	assert(payload < 1 << TEX_F32_NAN_SIGNIF)
+	NAN_BASE :: 0x7F800000
+
+	payload |= NAN_BASE
+	return transmute(f32)payload
+}
+
+Tex_Float_Conversion_Error :: enum {
+	None,
+	NaN_Payload_To_Large,
+	NaN_Payload_Zero,
+}
+
+// NOTE(robin): this code assumes a valid float literal produced by the tokenizer
+tex_f32_from_string :: proc(s: string) -> (value: f32, err: Tex_Float_Conversion_Error) {
+	s := s
+
+	assert(0 < len(s))
+
+	negative := false
+	switch s[0] {
+	case '+': s = s[1:]
+	case '-': s = s[1:]; negative = true
+	}
+
+	switch s {
+	case "inf": value = math.INF_F32
+	case "nan": value = tex_f32_nan()
+	case:
+		NAN_HEX_PREFIX :: "nan:0x"
+
+		if strings.starts_with(s, NAN_HEX_PREFIX) {
+			s = s[len(NAN_HEX_PREFIX):]
+
+			nan_payload, integer_err := tex_u32_from_string(s)
+			if integer_err == nil {
+				if nan_payload == 0 {
+					err = .NaN_Payload_Zero
+				} else if 1 << TEX_F32_NAN_SIGNIF  <= nan_payload {
+					err = .NaN_Payload_To_Large
+				} else {
+					value = tex_f32_nan(nan_payload)
+				}
+			} else if integer_err == .Number_To_Large {
+				err = .NaN_Payload_To_Large
+			}
+		} else {
+			if strings.starts_with(s, "0x") {
+				unimplemented()
+			} else {
+				for r in s {
+					switch r {
+					case '.', 'e', 'E': break
+					case '_': continue
+					}
+
+
+				}
+			}
+		}
+	}
+
+	return
 }
 
 Tex_Integer_Conversion_Error :: enum {
@@ -86,6 +171,10 @@ tex_uXX_from_string :: proc($T: typeid, s: string) -> (value: T, err: Tex_Intege
 	}
 
 	for r in s {
+		if r == '_' {
+			continue
+		}
+
 		overflow: bool
 		value, overflow = intrinsics.overflow_mul(value, base)
 		if overflow {
