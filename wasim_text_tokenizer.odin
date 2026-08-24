@@ -558,20 +558,20 @@ tex_tok_peek :: proc(t: ^Tex_Tokenizer) -> byte {
 
 // Skips white space and comments
 tex_tok_skip_space :: proc(t: ^Tex_Tokenizer) {
-	for {
+	loop: for {
 		if tex_tok_is_space(t.ch) {
 			tex_tok_read_ch(t)
 			continue
 		}
 
 		switch t.ch {
-		case utf8.RUNE_EOF: break
+		case utf8.RUNE_EOF: break loop
 		case ';':
 			if tex_tok_peek(t) == ';' {
 				tex_tok_read_ch(t)
 				tex_tok_read_ch(t)
 
-				for t.ch != '\n' {
+				for t.ch != '\n' && t.ch != utf8.RUNE_EOF {
 					tex_tok_read_ch(t)
 				}
 
@@ -586,7 +586,9 @@ tex_tok_skip_space :: proc(t: ^Tex_Tokenizer) {
 
 				for 0 < depth {
 					switch t.ch {
-					case utf8.RUNE_EOF: break
+					case utf8.RUNE_EOF:
+						tex_tok_errorf_here(t, "early eof in block comments")
+						break loop
 					case '(':
 						if tex_tok_peek(t) == ';' {
 							depth += 1
@@ -625,6 +627,9 @@ tex_tok_skip_to_token_boundary :: proc(t: ^Tex_Tokenizer) {
 		}
 
 		switch t.ch {
+		case ';': if tex_tok_peek(t) == ';' {
+				break loop
+			}
 		case utf8.RUNE_EOF, '(', ')':
 			break loop
 		}
@@ -659,7 +664,7 @@ tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 
 				if t.ch != '{' {
 					token.kind = .Invalid
-					tex_tok_errorf_here(t, "expected '{' after unicode escape in string, got %q instead", t.ch)
+					tex_tok_errorf_here(t, "expected '{{' after unicode escape in string, got %q instead", t.ch)
 					continue
 				}
 
@@ -677,13 +682,19 @@ tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 
 				if t.ch != '}' {
 					token.kind = .Invalid
-					tex_tok_errorf_here(t, "expected '}' after hex number inside unicode escape in string, got %q instead", t.ch)
+					tex_tok_errorf_here(t, "expected '}}' after hex number inside unicode escape in string, got %q instead", t.ch)
 					continue
 				}
 
 				tex_tok_read_ch(t) // eat }
 				continue
-			case: // invalid escape sequence
+			case: // invalid escape sequence or hex escapes(\hh)
+				if tex_tok_is_digit(t.ch, 16) && tex_tok_is_digit(rune(tex_tok_peek(t)), 16) {
+					tex_tok_read_ch(t)
+					tex_tok_read_ch(t)
+					continue
+				}
+
 				token.kind = .Invalid
 				tex_tok_errorf_here(t, "invalid escape sequence character %q", t.ch)
 			}
@@ -884,12 +895,6 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 		//              conceptually need to apply each rule
 		//              to see which one fits the longest
 
-		// try number first (nan, inf could interfere with other)
-		token.kind = tex_tok_read_number_like(token.data)
-		if token.kind != .Invalid {
-			return
-		}
-
 		index := tex_tok_perfect_hash_proc(token.data)
 
 		if 0 <= index {
@@ -898,6 +903,12 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 			assert(.Keywords_Begin <= token.kind)
 			assert(token.kind      <= .Keywords_End)
 
+			return
+		}
+
+		// try number first (nan, inf could interfere with other)
+		token.kind = tex_tok_read_number_like(token.data)
+		if token.kind != .Invalid {
 			return
 		}
 
@@ -928,40 +939,70 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
 
 @require import "core:testing"
 
+tex_tok_test_error_log :: proc(position: Tex_Position, format: string, args: ..any) {
+	log.errorf(format, ..args)
+}
+
 @test
-tex_tok_skip_space_test :: proc(t: ^testing.T) {
-	tests := []string{
-		"z",
-		";; line comment\n\nz",
-		"(; hello \n world (; nested \n block \t \r ;) after first nesting, and now we are done ;) z",
+tex_tok_skip_space_test_valid :: proc(t: ^testing.T) {
+	tests := []struct {
+		input:    string,
+		expected: rune,
+	}{
+		{"z",                                                                                           'z'},
+		{";; line comment\n\nz",                                                                        'z'},
+		{";; line comment at eof",                                                                      utf8.RUNE_EOF},
+		{"(; hello \n world (; nested \n block \t \r ;) after first nesting, and now we are done ;) z", 'z'},
 	}
 
 	for test in tests {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, test, "test.wat")
+		tex_tok_init(&tok, test.input, "test.wat", tex_tok_test_error_log)
 
 		tex_tok_skip_space(&tok)
 
-		testing.expect_value(t, tok.ch, 'z')
+		testing.expect_value(t, tok.ch, test.expected)
+	}
+}
+
+@test
+tex_tok_skip_space_test_invalid :: proc(t: ^testing.T) {
+	tests := []struct {
+		input:  string,
+		errors: int,
+	}{
+		{"(; unterminated", 1},
+	}
+
+	for test in tests {
+		tok: Tex_Tokenizer
+		tex_tok_init(&tok, test.input, "test.wat", nil)
+
+		tex_tok_skip_space(&tok)
+
+		testing.expect_value(t, tok.ch, utf8.RUNE_EOF)
+		testing.expect_value(t, tok.errors, test.errors)
 	}
 }
 
 @test
 tex_tok_skip_to_token_boundary_test :: proc(t: ^testing.T) {
 	tests := []struct{input: string, final_pos: int}{
-		{ "abc ", 3 },
-		{ "abc(", 3 },
-		{ "ABC ", 3 },
-		{ "000 ", 3 },
-		{ "$$$ ", 3 },
-		{ " (",   0 },
-		{ "(",    0 },
-		{ "",     0 },
+		{ "abc ",          3 },
+		{ "abc(",          3 },
+		{ "ABC ",          3 },
+		{ "000 ",          3 },
+		{ "$$$ ",          3 },
+		{ "abc;; comment", 3 },
+		{ ";",             1 },
+		{ " (",            0 },
+		{ "(",             0 },
+		{ "",              0 },
 	}
 
 	for test in tests {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, test.input, "test.wat")
+		tex_tok_init(&tok, test.input, "test.wat", tex_tok_test_error_log)
 
 		tex_tok_skip_to_token_boundary(&tok)
 
@@ -1001,12 +1042,12 @@ tex_tok_is_reserved_test_invalid :: proc(t: ^testing.T) {
 tex_tok_read_string_test_valid :: proc(t: ^testing.T) {
 	valid_strings := []string{
 		"\"hello world\"",
-		"\"\\t\\n\\r\\\"\\'\\\\\\u{0189ABEFabef}\"", // TODO(robin): test \u{...}
+		"\"\\t\\n\\r\\\"\\'\\\\\\u{0189ABEFabef}\\11\"",
 	}
 
 	for valid in valid_strings {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, valid, "test.wat")
+		tex_tok_init(&tok, valid, "test.wat", tex_tok_test_error_log)
 		token := tex_tok_read_string(&tok)
 		testing.expect_value(t, token.data, valid)
 		testing.expect_value(t, token.kind, Tex_Token_Kind.String)
@@ -1019,12 +1060,16 @@ tex_tok_read_string_test_invalid :: proc(t: ^testing.T) {
 		"\"",
 		"\"\n\"",
 		"\"\v\"",
-		"\"\x7F", // TODO(robin): test \u{...}
+		"\"\x7F",
+		"\"\\u",
+		"\"\\u{",
+		"\"\\u}",
+		"\"\\u{}",
 	}
 
 	for valid in valid_strings {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, valid, "test.wat")
+		tex_tok_init(&tok, valid, "test.wat", nil)
 		token := tex_tok_read_string(&tok)
 		testing.expect_value(t, token.kind, Tex_Token_Kind.Invalid)
 	}
@@ -1151,7 +1196,7 @@ tex_tok_is_identifier_test_invalid :: proc(t: ^testing.T) {
 }
 
 @test
-tex_tok_next_test :: proc(t: ^testing.T) {
+tex_tok_next_test_valid :: proc(t: ^testing.T) {
 	tests := []struct{
 		input:  string,
 		tokens: []Token,
@@ -1159,14 +1204,12 @@ tex_tok_next_test :: proc(t: ^testing.T) {
 		{ "(func)",              { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
 		{ "( func )",            { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
 		{ "align=4 offset=0x10", { { kind = .Align_Equal_Natural, data = "align=4" }, { kind = .Offset_Equal_Natural, data = "offset=0x10" } } },
-		{ "align= 4",            { { kind = .Invalid, data = "align=" }, { kind = .Integer_Unsigned, data = "4" } } },
-		{ "@",                   { { kind = .Invalid, data = "@" } } },
-		{ " @@@$$ ",             { { kind = .Invalid, data = "@@@$$" } } },
+		{ "i32;; comment",       { { kind = .I32, data = "i32" } } },
 	}
 
 	for test in tests {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, test.input, "test.wat")
+		tex_tok_init(&tok, test.input, "test.wat", tex_tok_test_error_log)
 
 		i := 0
 		for token := tex_tok_next(&tok); token.kind != .Eof; token = tex_tok_next(&tok) {
@@ -1178,6 +1221,43 @@ tex_tok_next_test :: proc(t: ^testing.T) {
 			}
 
 			i += 1
+		}
+		if i != len(test.tokens) {
+			log.errorf("tokenizer produced too few tokens, expected %v but got %v", len(test.tokens), i)
+		}
+	}
+}
+
+@test
+tex_tok_next_test_invalid :: proc(t: ^testing.T) {
+	tests := []struct{
+		input:  string,
+		tokens: []Token,
+	}{
+		{ "align= 4", { { kind = .Invalid, data = "align=" }, { kind = .Integer_Unsigned, data = "4" } } },
+		{ ";",        { { kind = .Invalid, data = ";" } } },
+		{ "i32;x",    { { kind = .Invalid, data = "i32;x" } } },
+		{ "@",        { { kind = .Invalid, data = "@" } } },
+		{ " @@@$$ ",  { { kind = .Invalid, data = "@@@$$" } } },
+	}
+
+	for test in tests {
+		tok: Tex_Tokenizer
+		tex_tok_init(&tok, test.input, "test.wat", nil)
+
+		i := 0
+		for token := tex_tok_next(&tok); token.kind != .Eof; token = tex_tok_next(&tok) {
+			if len(test.tokens) <= i {
+				log.errorf("tokenizer produced to many tokens, exepcted %v but got %v (current token=%v)", len(test.tokens), i, token)
+			} else {
+				testing.expect_value(t, token.kind, test.tokens[i].kind)
+				testing.expect_value(t, token.data, test.tokens[i].data)
+			}
+
+			i += 1
+		}
+		if i != len(test.tokens) {
+			log.errorf("tokenizer produced too few tokens, expected %v but got %v", len(test.tokens), i)
 		}
 	}
 }
@@ -1200,7 +1280,7 @@ tex_tok_next_test_pos :: proc(t: ^testing.T) {
 
 	for test in tests {
 		tok: Tex_Tokenizer
-		tex_tok_init(&tok, test.input, "")
+		tex_tok_init(&tok, test.input, "", tex_tok_test_error_log)
 
 		i := 0
 		for token := tex_tok_next(&tok); token.kind != .Eof; token = tex_tok_next(&tok) {
