@@ -24,7 +24,7 @@ tex_integer_rune_value :: proc(r: rune) -> (i: int) {
 
 TEX_F64_NAN_SIGNIF :: math.F64_MANT_DIG-1 // amount of actual bits stored in the f64
 
-tex_f64_nan :: proc(payload: u64 = 1 << TEX_F64_NAN_SIGNIF-1) -> f64 {
+tex_f64_nan :: proc(payload: u64 = 1 << (TEX_F64_NAN_SIGNIF-1)) -> f64 {
 	payload := payload
 
 	assert(payload != 0)
@@ -37,7 +37,7 @@ tex_f64_nan :: proc(payload: u64 = 1 << TEX_F64_NAN_SIGNIF-1) -> f64 {
 
 TEX_F32_NAN_SIGNIF :: math.F32_MANT_DIG-1 // amount of actual bits stored in the f32
 
-tex_f32_nan :: proc(payload: u32 = 1 << TEX_F32_NAN_SIGNIF-1) -> f32 {
+tex_f32_nan :: proc(payload: u32 = 1 << (TEX_F32_NAN_SIGNIF-1)) -> f32 {
 	payload := payload
 
 	assert(payload != 0)
@@ -50,8 +50,58 @@ tex_f32_nan :: proc(payload: u32 = 1 << TEX_F32_NAN_SIGNIF-1) -> f32 {
 
 Tex_Float_Conversion_Error :: enum {
 	None,
+	Number_To_Large,
 	NaN_Payload_To_Large,
 	NaN_Payload_Zero,
+}
+
+// NOTE(robin): this code assumes a valid float literal produced by the tokenizer
+tex_f64_from_string :: proc(s: string) -> (value: f64, err: Tex_Float_Conversion_Error) {
+	s := s
+
+	assert(0 < len(s))
+
+	negative := false
+	switch s[0] {
+	case '+': s = s[1:]
+	case '-': s = s[1:]; negative = true
+	}
+
+	switch s {
+	case "inf": value = math.INF_F64
+	case "nan": value = tex_f64_nan()
+	case:
+		NAN_HEX_PREFIX :: "nan:0x"
+
+		if strings.starts_with(s, NAN_HEX_PREFIX) {
+			s = s[len("nan:"):]
+
+			nan_payload, integer_err := tex_u64_from_string(s)
+			if integer_err == nil {
+				if nan_payload == 0 {
+					err = .NaN_Payload_Zero
+				} else if 1 << TEX_F64_NAN_SIGNIF  <= nan_payload {
+					err = .NaN_Payload_To_Large
+				} else {
+					value = tex_f64_nan(nan_payload)
+				}
+			} else if integer_err == .Number_To_Large {
+				err = .NaN_Payload_To_Large
+			}
+		} else {
+			overflow: bool
+			value, overflow = tex_parse_f64(s)
+			if overflow {
+				err = .Number_To_Large
+			}
+		}
+	}
+
+	if negative {
+		value = -value
+	}
+
+	return
 }
 
 // NOTE(robin): this code assumes a valid float literal produced by the tokenizer
@@ -73,7 +123,7 @@ tex_f32_from_string :: proc(s: string) -> (value: f32, err: Tex_Float_Conversion
 		NAN_HEX_PREFIX :: "nan:0x"
 
 		if strings.starts_with(s, NAN_HEX_PREFIX) {
-			s = s[len(NAN_HEX_PREFIX):]
+			s = s[len("nan:"):]
 
 			nan_payload, integer_err := tex_u32_from_string(s)
 			if integer_err == nil {
@@ -88,19 +138,16 @@ tex_f32_from_string :: proc(s: string) -> (value: f32, err: Tex_Float_Conversion
 				err = .NaN_Payload_To_Large
 			}
 		} else {
-			if strings.starts_with(s, "0x") {
-				unimplemented()
-			} else {
-				for r in s {
-					switch r {
-					case '.', 'e', 'E': break
-					case '_': continue
-					}
-
-
-				}
+			overflow: bool
+			value, overflow = tex_parse_f32(s)
+			if overflow {
+				err = .Number_To_Large
 			}
 		}
+	}
+
+	if negative {
+		value = -value
 	}
 
 	return
@@ -197,7 +244,7 @@ tex_u64_from_string :: proc(s: string) -> (u64, Tex_Integer_Conversion_Error) { 
 
 // Quoted string
 
-tex_valid_string :: utf8.valid_string
+tex_valid_utf8 :: utf8.valid_string
 
 // NOTE: this could introduce invalid utf-8 into the string
 // NOTE: allocation is not guaranteed
@@ -312,7 +359,7 @@ tex_unquote_string_test :: proc(t: ^testing.T) {
 	for test in tests {
 		unquoted := tex_unquote_string(test.quoted, temp)
 		expect_bytes_equal(unquoted, test.unquoted)
-		testing.expect_value(t, tex_valid_string(transmute(string)unquoted), test.utf8_valid)
+		testing.expect_value(t, tex_valid_utf8(transmute(string)unquoted), test.utf8_valid)
 	}
 }
 
@@ -351,6 +398,62 @@ tex_i32_from_string_test :: proc(t: ^testing.T) {
 		result, err := tex_i32_from_string(test.input)
 		if test.err != .None {
 			testing.expect_value(t, result, test.result)
+		}
+		testing.expect_value(t, err, test.err)
+	}
+}
+
+@test
+tex_f32_from_string_test :: proc(t: ^testing.T) {
+	tests := []struct{input: string, bits: u32, err: Tex_Float_Conversion_Error}{
+		{"0",              0x00000000, .None},
+		{"-0",             0x80000000, .None},
+		{"1.5",            0x3fc00000, .None},
+		{"0x1p-149",       0x00000001, .None},
+		{"inf",            0x7f800000, .None},
+		{"-inf",           0xff800000, .None},
+		{"nan",            0x7fc00000, .None},
+		{"-nan",           0xffc00000, .None},
+		{"nan:0x1",        0x7f800001, .None},
+		{"nan:0x7f_ffff",  0x7fffffff, .None},
+		{"nan:0x0",        0x00000000, .NaN_Payload_Zero},
+		{"nan:0x80_0000",  0x00000000, .NaN_Payload_To_Large},
+		{"0x1p128",        0x7f800000, .Number_To_Large},
+	}
+
+	for test in tests {
+		result, err := tex_f32_from_string(test.input)
+		result_bits := transmute(u32)result
+		if result_bits != test.bits {
+			log.errorf("%q: expected bits 0x%08x, got 0x%08x", test.input, test.bits, result_bits)
+		}
+		testing.expect_value(t, err, test.err)
+	}
+}
+
+@test
+tex_f64_from_string_test :: proc(t: ^testing.T) {
+	tests := []struct{input: string, bits: u64, err: Tex_Float_Conversion_Error}{
+		{"0",                       0x0000000000000000, .None},
+		{"-0",                      0x8000000000000000, .None},
+		{"1.5",                     0x3ff8000000000000, .None},
+		{"0x1p-1074",               0x0000000000000001, .None},
+		{"inf",                     0x7ff0000000000000, .None},
+		{"-inf",                    0xfff0000000000000, .None},
+		{"nan",                     0x7ff8000000000000, .None},
+		{"-nan",                    0xfff8000000000000, .None},
+		{"nan:0x1",                 0x7ff0000000000001, .None},
+		{"nan:0xf_ffff_ffff_ffff",  0x7fffffffffffffff, .None},
+		{"nan:0x0",                 0x0000000000000000, .NaN_Payload_Zero},
+		{"nan:0x10_0000_0000_0000", 0x0000000000000000, .NaN_Payload_To_Large},
+		{"0x1p1024",                0x7ff0000000000000, .Number_To_Large},
+	}
+
+	for test in tests {
+		result, err := tex_f64_from_string(test.input)
+		result_bits := transmute(u64)result
+		if result_bits != test.bits {
+			log.errorf("%q: expected bits 0x%016x, got 0x%016x", test.input, test.bits, result_bits)
 		}
 		testing.expect_value(t, err, test.err)
 	}
