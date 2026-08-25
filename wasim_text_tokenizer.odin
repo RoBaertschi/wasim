@@ -939,6 +939,7 @@ tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Tex_Token) {
 
 @require import "core:testing"
 
+@private
 tex_tok_test_error_log :: proc(position: Tex_Position, format: string, args: ..any) {
 	log.errorf(format, ..args)
 }
