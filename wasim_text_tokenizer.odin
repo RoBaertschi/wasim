@@ -474,7 +474,7 @@ tex_instruction_opcode_by_token_kind := [Tex_Token_Kind]Instruction_Opcode{
 
 // #endregion
 
-Token :: struct {
+Tex_Token :: struct {
 	using position: Tex_Position,
 	kind: Tex_Token_Kind,
 	data: string,
@@ -639,7 +639,7 @@ tex_tok_skip_to_token_boundary :: proc(t: ^Tex_Tokenizer) {
 }
 
 // TODO(robin): figure out how to differentiate between the validating and the parsing
-tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
+tex_tok_read_string :: proc(t: ^Tex_Tokenizer) -> (token: Tex_Token) {
 	token.position = t.position
 	token.kind = .String
 
@@ -865,7 +865,7 @@ tex_tok_is_identifier :: proc(s: string) -> (valid: bool) {
 	return
 }
 
-tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Token) {
+tex_tok_next :: proc(t: ^Tex_Tokenizer) -> (token: Tex_Token) {
 	tex_tok_skip_space(t)
 
 	token.position = t.position
@@ -1199,7 +1199,7 @@ tex_tok_is_identifier_test_invalid :: proc(t: ^testing.T) {
 tex_tok_next_test_valid :: proc(t: ^testing.T) {
 	tests := []struct{
 		input:  string,
-		tokens: []Token,
+		tokens: []Tex_Token,
 	}{
 		{ "(func)",              { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
 		{ "( func )",            { { kind = .Paren_Open, data = "(" }, { kind = .Func, data = "func" }, { kind = .Paren_Close, data = ")" } } },
@@ -1232,7 +1232,7 @@ tex_tok_next_test_valid :: proc(t: ^testing.T) {
 tex_tok_next_test_invalid :: proc(t: ^testing.T) {
 	tests := []struct{
 		input:  string,
-		tokens: []Token,
+		tokens: []Tex_Token,
 	}{
 		{ "align= 4", { { kind = .Invalid, data = "align=" }, { kind = .Integer_Unsigned, data = "4" } } },
 		{ ";",        { { kind = .Invalid, data = ";" } } },
@@ -1266,7 +1266,7 @@ tex_tok_next_test_invalid :: proc(t: ^testing.T) {
 tex_tok_next_test_pos :: proc(t: ^testing.T) {
 	tests := []struct{
 		input:  string,
-		tokens: []Token,
+		tokens: []Tex_Token,
 	}{
 		{
 			"(\nfunc)",
