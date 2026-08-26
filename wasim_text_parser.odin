@@ -92,6 +92,13 @@ tex_par_parse_value_type :: proc(p: ^Tex_Parser) -> (value_type: Value_Type) {
 	return
 }
 
+tex_par_get_next_paren_kind :: proc(p: ^Tex_Parser) -> (kind: Tex_Token_Kind) {
+	if p.current_token.kind == .Paren_Open {
+		kind = p.peek_token.kind
+	}
+	return
+}
+
 tex_par_parse_id :: proc(p: ^Tex_Parser) -> (id: string) {
 	if p.peek_token.kind == .Identifier {
 		tex_par_next_token(p)
@@ -144,11 +151,23 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 
 	func.range.start = p.current_token
 
-	tex_par_next_token(p) // .Func
+	tex_par_next_token(p) // skip '('
 
 	func.id = tex_par_parse_id(p)
 
-	if tex_par_expect_peek(p, .Paren_Close) {
+	tex_par_next_token(p)
+
+	if tex_par_get_next_paren_kind(p) == .Type {
+		tex_par_next_token(p) // skip '('
+		tex_par_next_token(p) // skip .Type
+
+		#partial switch p.current_token.kind {
+		case .Identifier:
+		case .Integer_Unsigned:
+		}
+	}
+
+	if tex_par_expect_current(p, .Paren_Close) {
 		func.range.end = p.current_token
 		tex_par_next_token(p)
 	} // TODO(robin): recover to next Paren_Close
