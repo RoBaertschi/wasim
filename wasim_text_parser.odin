@@ -144,6 +144,29 @@ tex_par_parse_module :: proc(p: ^Tex_Parser, arena: ^B.Arena) -> (module: ^Tex_M
 	return
 }
 
+tex_par_parse_func_type_decl :: proc(p: ^Tex_Parser) -> (func_type: Tex_Func_Type) {
+	for tex_par_get_next_paren_kind(p) == .Param {
+		tex_par_next_token(p) // skip '('
+		tex_par_next_token(p) // skip .Param
+
+		param: Tex_Param
+
+		if p.current_token.kind == .Identifier {
+			param.id = p.current_token.data
+			tex_par_next_token(p)
+		}
+
+		param.value_type = tex_par_parse_value_type(p)
+
+		if param.id == "" {
+		}
+	}
+
+	for tex_par_get_next_paren_kind(p) == .Result {}
+
+	return
+}
+
 tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 	assert(p.current_token.kind == .Paren_Open)
 	assert(p.peek_token.kind == .Func)
@@ -163,8 +186,20 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 
 		#partial switch p.current_token.kind {
 		case .Identifier:
+			func.use.id = p.current_token.data
 		case .Integer_Unsigned:
+			err: Tex_Integer_Conversion_Error
+			func.use.index, err = tex_u32_from_string(p.current_token.data)
+
+			switch err {
+			case .Number_To_Large:
+				tex_par_errorf_current(p, "integer %q does not fit into an u32", p.current_token.data)
+			case .None, .Number_To_Small:
+			}
 		}
+
+		tex_par_expect_peek(p, .Paren_Close)
+		tex_par_next_token(p)
 	}
 
 	if tex_par_expect_current(p, .Paren_Close) {
@@ -231,7 +266,7 @@ tex_par_parse_module_test :: proc(t: ^testing.T) {
 		{ "(module)", {} },
 		{ "(module $hello)", { id = "$hello" } },
 		{ "(module (func) (func $f))", { funcs = tex_par_test_funcs(temp, {}, { id = "$f" }) } },
-		{ "(module (func (type 0)))", { funcs = tex_par_test_funcs(temp, {}) } },
+		{ "(module (func (type 1)) (func (type $hello)))", { funcs = tex_par_test_funcs(temp, { use = { index = 1 } }, { use = { id = "$hello" } }) } },
 	}
 
 	for test in tests {
@@ -242,6 +277,13 @@ tex_par_parse_module_test :: proc(t: ^testing.T) {
 		testing.expect_value(t, module.id, test.module.id)
 		testing.expect_value(t, p.errors, 0)
 
-		tex_par_test_expect_list_equal(t, module.funcs, test.module.funcs, proc(a, b: Tex_Func) -> bool { return a.id == b.id })
+		tex_par_test_expect_list_equal(
+			t,
+			module.funcs,
+			test.module.funcs,
+			proc(a, b: Tex_Func) -> bool {
+				return a.id == b.id && a.use == b.use
+			},
+		)
 	}
 }
