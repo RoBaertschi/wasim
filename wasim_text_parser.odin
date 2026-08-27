@@ -99,6 +99,46 @@ tex_par_get_next_paren_kind :: proc(p: ^Tex_Parser) -> (kind: Tex_Token_Kind) {
 	return
 }
 
+tex_par_iterate_current_until :: proc(p: ^Tex_Parser, until: Tex_Token_Kind) -> bool {
+	return p.current_token.kind != .Eof && p.current_token.kind != until
+}
+
+tex_par_parse_paren_keyword :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind, parse_proc: proc(p: ^Tex_Parser) -> $T) -> (value: T) {
+	if p.current_token.kind == .Paren_Open {
+		if p.peek_token.kind == keyword {
+			tex_par_next_token(p)
+			tex_par_next_token(p)
+			value = parse_proc(p)
+			tex_par_expect_current(p, .Paren_Close)
+			tex_par_next_token(p)
+		} else {
+			tex_par_errorf_peek(p, "expected %v but only got %v", keyword, p.current_token.kind)
+			tex_par_attempt_recovery(p)
+		}
+	} else {
+		tex_par_errorf_current(p, "expected '(' but only got %v", p.current_token.kind)
+	}
+
+	return
+}
+
+tex_par_attempt_recovery :: proc(p: ^Tex_Parser) {
+	depth := 0
+	for p.current_token.kind != .Eof {
+		if depth < 0 {
+			break
+		}
+
+		#partial switch p.current_token.kind {
+		case .Paren_Open:  depth += 1
+		case .Paren_Close:
+			depth -= 1
+		}
+
+		tex_par_next_token(p)
+	}
+}
+
 tex_par_parse_id :: proc(p: ^Tex_Parser) -> (id: string) {
 	if p.peek_token.kind == .Identifier {
 		tex_par_next_token(p)
@@ -146,23 +186,54 @@ tex_par_parse_module :: proc(p: ^Tex_Parser, arena: ^B.Arena) -> (module: ^Tex_M
 
 tex_par_parse_func_type_decl :: proc(p: ^Tex_Parser) -> (func_type: Tex_Func_Type) {
 	for tex_par_get_next_paren_kind(p) == .Param {
-		tex_par_next_token(p) // skip '('
-		tex_par_next_token(p) // skip .Param
+		params := tex_par_parse_paren_keyword(
+			p,
+			.Param,
+			proc(p: ^Tex_Parser) -> (params: List(Tex_Param)) {
+				param: Tex_Param
 
-		param: Tex_Param
+				if p.current_token.kind == .Identifier {
+					param.id = p.current_token.data
+					tex_par_next_token(p)
+				}
 
-		if p.current_token.kind == .Identifier {
-			param.id = p.current_token.data
-			tex_par_next_token(p)
-		}
+				if p.current_token.kind != .Paren_Close {
+					param.value_type = tex_par_parse_value_type(p)
+					list_push(&params, B.arena_push(p.arena, param))
 
-		param.value_type = tex_par_parse_value_type(p)
+					if param.id == "" {
+						for tex_par_iterate_current_until(p, .Paren_Close) {
+							param.value_type = tex_par_parse_value_type(p)
+							list_push(&params, B.arena_push(p.arena, param))
+						}
+					}
+				}
 
-		if param.id == "" {
-		}
+				return
+			},
+		)
+
+		list_concat(&func_type.params, &params)
 	}
 
-	for tex_par_get_next_paren_kind(p) == .Result {}
+	for tex_par_get_next_paren_kind(p) == .Result {
+		results := tex_par_parse_paren_keyword(
+			p,
+			.Result,
+			proc(p: ^Tex_Parser) -> (results: List(Tex_Value_Type_Node)) {
+				result: Tex_Value_Type_Node
+
+				for tex_par_iterate_current_until(p, .Paren_Close) {
+					result.value_type = tex_par_parse_value_type(p)
+					list_push(&results, B.arena_push(p.arena, result))
+				}
+
+				return
+			},
+		)
+
+		list_concat(&func_type.results, &results)
+	}
 
 	return
 }
@@ -173,6 +244,15 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 	func = B.arena_push(p.arena, Tex_Func)
 
 	func.range.start = p.current_token
+
+	tex_par_parse_paren_keyword(
+		p,
+		.Func,
+		proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
+
+			return
+		},
+	)
 
 	tex_par_next_token(p) // skip '('
 
@@ -194,9 +274,11 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 			switch err {
 			case .Number_To_Large:
 				tex_par_errorf_current(p, "integer %q does not fit into an u32", p.current_token.data)
-			case .None, .Number_To_Small:
+			case .None, .Number_To_Small: // NOTE(robin): Number_To_Small can't happen for Unsigned_Integers
 			}
 		}
+
+		func.use.inlined_type = tex_par_parse_func_type_decl(p)
 
 		tex_par_expect_peek(p, .Paren_Close)
 		tex_par_next_token(p)
@@ -213,10 +295,10 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 import "core:testing"
 
 @private
-tex_par_test_parser :: proc(input: string) -> (p: Tex_Parser) {
+tex_par_test_parser :: proc(input: string, par_error_proc := tex_par_test_error_log, tok_error_proc := tex_tok_test_error_log) -> (p: Tex_Parser) {
 	tok: Tex_Tokenizer
-	tex_tok_init(&tok, input, "test.wat", tex_tok_test_error_log)
-	tex_par_init(&p, tok, tex_par_test_error_log)
+	tex_tok_init(&tok, input, "test.wat", tok_error_proc)
+	tex_par_init(&p, tok, par_error_proc)
 
 	return
 }
@@ -285,5 +367,68 @@ tex_par_parse_module_test :: proc(t: ^testing.T) {
 				return a.id == b.id && a.use == b.use
 			},
 		)
+	}
+}
+
+@private
+tex_par_test_params :: proc(arena: ^B.Arena, params: ..Tex_Param) -> (l: List(Tex_Param)) {
+	for param in params {
+		node := B.arena_push(arena, Tex_Param)
+		node^ = param
+		list_push(&l, node)
+	}
+
+	return
+}
+
+@private
+tex_par_test_results :: proc(arena: ^B.Arena, results: ..Value_Type) -> (l: List(Tex_Value_Type_Node)) {
+	for result in results {
+		node             := B.arena_push(arena, Tex_Value_Type_Node)
+		node^.value_type  = result
+		list_push(&l, node)
+	}
+
+	return
+}
+
+@test
+tex_par_parse_func_type_decl_test_valid :: proc(t: ^testing.T) {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+
+	tests := []struct{input: string, func_type: Tex_Func_Type}{
+		{"(param i32 i32 i32) (result i32 i32)", {tex_par_test_params(temp, {value_type = .I32}, {value_type = .I32}, {value_type = .I32}), tex_par_test_results(temp, .I32, .I32)}},
+		{"(param $hello i32) (result)", {tex_par_test_params(temp, {id = "$hello", value_type = .I32}), tex_par_test_results(temp)}},
+		{"(param $hello i32) (param $world f64) (result)", {tex_par_test_params(temp, {id = "$hello", value_type = .I32}, {id = "$world", value_type = .F64}), tex_par_test_results(temp)}},
+		{"(param) (result)", {}},
+	}
+
+	for test in tests {
+		p         := tex_par_test_parser(test.input)
+		p.arena    = temp
+		func_type := tex_par_parse_func_type_decl(&p)
+
+		testing.expect_value(t, p.errors, 0)
+		testing.expect_value(t, func_type.params.count, test.func_type.params.count)
+		testing.expect_value(t, func_type.results.count, test.func_type.results.count)
+	}
+}
+
+@test
+tex_par_parse_func_type_decl_test_invalid :: proc(t: ^testing.T) {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+
+	tests := []struct{input: string, errors: int}{
+		{"(result $hi i32)", 1},
+		{"(result", 1},
+		{"(param f16)", 1},
+	}
+
+	for test in tests {
+		p         := tex_par_test_parser(test.input, nil, nil)
+		p.arena    = temp
+		_ = tex_par_parse_func_type_decl(&p)
+
+		testing.expect_value(t, p.errors, test.errors)
 	}
 }
