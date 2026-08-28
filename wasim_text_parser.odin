@@ -99,20 +99,14 @@ tex_par_get_next_paren_kind :: proc(p: ^Tex_Parser) -> (kind: Tex_Token_Kind) {
 	return
 }
 
-tex_par_iterate_current_until :: proc(p: ^Tex_Parser, until: Tex_Token_Kind) -> bool {
-	return p.current_token.kind != .Eof && p.current_token.kind != until
-}
-
-tex_par_parse_paren_keyword :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind, parse_proc: proc(p: ^Tex_Parser) -> $T) -> (value: T) {
+tex_par_paren_kind_begin :: proc(p: ^Tex_Parser, kind: Tex_Token_Kind) -> (ok: bool) {
 	if p.current_token.kind == .Paren_Open {
-		if p.peek_token.kind == keyword {
+		if p.peek_token.kind == kind {
 			tex_par_next_token(p)
 			tex_par_next_token(p)
-			value = parse_proc(p)
-			tex_par_expect_current(p, .Paren_Close)
-			tex_par_next_token(p)
+			ok = true
 		} else {
-			tex_par_errorf_peek(p, "expected %v but only got %v", keyword, p.current_token.kind)
+			tex_par_errorf_peek(p, "expected %v but only got %v", kind, p.current_token.kind)
 			tex_par_attempt_recovery(p)
 		}
 	} else {
@@ -120,6 +114,18 @@ tex_par_parse_paren_keyword :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind, par
 	}
 
 	return
+}
+
+tex_par_paren_kind_end :: proc(p: ^Tex_Parser) {
+	if tex_par_expect_current(p, .Paren_Close) {
+		tex_par_next_token(p)
+	} else {
+		tex_par_attempt_recovery(p)
+	}
+}
+
+tex_par_iterate_current_until :: proc(p: ^Tex_Parser, until: Tex_Token_Kind) -> bool {
+	return p.current_token.kind != .Eof && p.current_token.kind != until
 }
 
 tex_par_attempt_recovery :: proc(p: ^Tex_Parser) {
@@ -140,9 +146,9 @@ tex_par_attempt_recovery :: proc(p: ^Tex_Parser) {
 }
 
 tex_par_parse_id :: proc(p: ^Tex_Parser) -> (id: string) {
-	if p.peek_token.kind == .Identifier {
-		tex_par_next_token(p)
+	if p.current_token.kind == .Identifier {
 		id = p.current_token.data
+		tex_par_next_token(p)
 	}
 	return
 }
@@ -152,14 +158,9 @@ tex_par_parse_module :: proc(p: ^Tex_Parser, arena: ^B.Arena) -> (module: ^Tex_M
 
 	module = B.arena_push(p.arena, Tex_Module)
 
-	if tex_par_expect_current(p, .Paren_Open) {
-		module.range.start = p.current_token
-
-		tex_par_expect_peek(p, .Module)
-
+	module.range.start = p.current_token
+	if tex_par_paren_kind_begin(p, .Module) {
 		module.id = tex_par_parse_id(p)
-
-		tex_par_next_token(p)
 
 		loop: for {
 			#partial switch p.current_token.kind {
@@ -174,66 +175,63 @@ tex_par_parse_module :: proc(p: ^Tex_Parser, arena: ^B.Arena) -> (module: ^Tex_M
 			}
 		}
 
-		tex_par_expect_current(p, .Paren_Close)
-
 		module.range.end = p.current_token
+		tex_par_paren_kind_end(p)
+		tex_par_expect_current(p, .Eof)
+	}
 
-		tex_par_expect_peek(p, .Eof)
+	return
+}
+
+tex_par_parse_named_value_type :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind) -> (named_value_types: List(Tex_Named_Value_Type)) {
+	for tex_par_get_next_paren_kind(p) == keyword {
+		if tex_par_paren_kind_begin(p, keyword) {
+			named: Tex_Named_Value_Type
+
+			if p.current_token.kind == .Identifier {
+				named.id = p.current_token.data
+				tex_par_next_token(p)
+			}
+
+			if p.current_token.kind != .Paren_Close {
+				named.value_type = tex_par_parse_value_type(p)
+				list_push(&named_value_types, B.arena_push(p.arena, named))
+
+				if named.id == "" {
+					for tex_par_iterate_current_until(p, .Paren_Close) {
+						named.value_type = tex_par_parse_value_type(p)
+						list_push(&named_value_types, B.arena_push(p.arena, named))
+					}
+				}
+			}
+
+			tex_par_paren_kind_end(p)
+		}
+	}
+
+	return
+}
+
+tex_par_parse_value_types :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind) -> (value_types: List(Tex_Value_Type_Node)) {
+	for tex_par_get_next_paren_kind(p) == keyword {
+		if tex_par_paren_kind_begin(p, keyword) {
+			result: Tex_Value_Type_Node
+
+			for tex_par_iterate_current_until(p, .Paren_Close) {
+				result.value_type = tex_par_parse_value_type(p)
+				list_push(&value_types, B.arena_push(p.arena, result))
+			}
+
+			tex_par_paren_kind_end(p)
+		}
 	}
 
 	return
 }
 
 tex_par_parse_func_type_decl :: proc(p: ^Tex_Parser) -> (func_type: Tex_Func_Type) {
-	for tex_par_get_next_paren_kind(p) == .Param {
-		params := tex_par_parse_paren_keyword(
-			p,
-			.Param,
-			proc(p: ^Tex_Parser) -> (params: List(Tex_Param)) {
-				param: Tex_Param
-
-				if p.current_token.kind == .Identifier {
-					param.id = p.current_token.data
-					tex_par_next_token(p)
-				}
-
-				if p.current_token.kind != .Paren_Close {
-					param.value_type = tex_par_parse_value_type(p)
-					list_push(&params, B.arena_push(p.arena, param))
-
-					if param.id == "" {
-						for tex_par_iterate_current_until(p, .Paren_Close) {
-							param.value_type = tex_par_parse_value_type(p)
-							list_push(&params, B.arena_push(p.arena, param))
-						}
-					}
-				}
-
-				return
-			},
-		)
-
-		list_concat(&func_type.params, &params)
-	}
-
-	for tex_par_get_next_paren_kind(p) == .Result {
-		results := tex_par_parse_paren_keyword(
-			p,
-			.Result,
-			proc(p: ^Tex_Parser) -> (results: List(Tex_Value_Type_Node)) {
-				result: Tex_Value_Type_Node
-
-				for tex_par_iterate_current_until(p, .Paren_Close) {
-					result.value_type = tex_par_parse_value_type(p)
-					list_push(&results, B.arena_push(p.arena, result))
-				}
-
-				return
-			},
-		)
-
-		list_concat(&func_type.results, &results)
-	}
+	func_type.params = tex_par_parse_named_value_type(p, .Param)
+	func_type.results = tex_par_parse_value_types(p, .Result)
 
 	return
 }
@@ -244,50 +242,37 @@ tex_par_parse_func :: proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
 	func = B.arena_push(p.arena, Tex_Func)
 
 	func.range.start = p.current_token
+	if tex_par_paren_kind_begin(p, .Func) {
+		func.id = tex_par_parse_id(p)
 
-	tex_par_parse_paren_keyword(
-		p,
-		.Func,
-		proc(p: ^Tex_Parser) -> (func: ^Tex_Func) {
+		if tex_par_get_next_paren_kind(p) == .Type {
+			assert(tex_par_paren_kind_begin(p, .Type))
 
-			return
-		},
-	)
-
-	tex_par_next_token(p) // skip '('
-
-	func.id = tex_par_parse_id(p)
-
-	tex_par_next_token(p)
-
-	if tex_par_get_next_paren_kind(p) == .Type {
-		tex_par_next_token(p) // skip '('
-		tex_par_next_token(p) // skip .Type
-
-		#partial switch p.current_token.kind {
-		case .Identifier:
-			func.use.id = p.current_token.data
-		case .Integer_Unsigned:
-			err: Tex_Integer_Conversion_Error
-			func.use.index, err = tex_u32_from_string(p.current_token.data)
-
-			switch err {
-			case .Number_To_Large:
-				tex_par_errorf_current(p, "integer %q does not fit into an u32", p.current_token.data)
-			case .None, .Number_To_Small: // NOTE(robin): Number_To_Small can't happen for Unsigned_Integers
+			#partial switch p.current_token.kind {
+			case .Identifier:
+				func.use.id = p.current_token.data
+			case .Integer_Unsigned:
+				err: Tex_Integer_Conversion_Error
+				func.use.index, err = tex_u32_from_string(p.current_token.data)
+				switch err {
+				case .Number_To_Large:
+					tex_par_errorf_current(p, "integer %q does not fit into an u32", p.current_token.data)
+				case .None, .Number_To_Small: // NOTE(robin): Number_To_Small can't happen for Unsigned_Integers
+				}
 			}
+
+			tex_par_next_token(p)
+
+			func.use.inlined_type = tex_par_parse_func_type_decl(p)
+
+			tex_par_paren_kind_end(p)
 		}
 
-		func.use.inlined_type = tex_par_parse_func_type_decl(p)
+		func.locals = tex_par_parse_named_value_type(p, .Local)
 
-		tex_par_expect_peek(p, .Paren_Close)
-		tex_par_next_token(p)
-	}
-
-	if tex_par_expect_current(p, .Paren_Close) {
 		func.range.end = p.current_token
-		tex_par_next_token(p)
-	} // TODO(robin): recover to next Paren_Close
+		tex_par_paren_kind_end(p)
+	}
 
 	return
 }
@@ -371,10 +356,22 @@ tex_par_parse_module_test :: proc(t: ^testing.T) {
 }
 
 @private
-tex_par_test_params :: proc(arena: ^B.Arena, params: ..Tex_Param) -> (l: List(Tex_Param)) {
-	for param in params {
-		node := B.arena_push(arena, Tex_Param)
-		node^ = param
+named_value_value_type :: proc(value_type: Value_Type) -> Tex_Named_Value_Type {
+	return {
+		value_type = value_type,
+	}
+}
+
+@private
+named_value_type :: proc{
+	named_value_value_type,
+}
+
+@private
+named_value_types_full :: proc(arena: ^B.Arena, named_value_types: ..Tex_Named_Value_Type) -> (l: List(Tex_Named_Value_Type)) {
+	for named in named_value_types {
+		node  := B.arena_push(arena, Tex_Named_Value_Type)
+		node^  = named
 		list_push(&l, node)
 	}
 
@@ -382,7 +379,18 @@ tex_par_test_params :: proc(arena: ^B.Arena, params: ..Tex_Param) -> (l: List(Te
 }
 
 @private
-tex_par_test_results :: proc(arena: ^B.Arena, results: ..Value_Type) -> (l: List(Tex_Value_Type_Node)) {
+named_value_types_simple :: proc(arena: ^B.Arena, named_value_types: ..Value_Type) -> (l: List(Tex_Named_Value_Type)) {
+	for named in named_value_types {
+		node            := B.arena_push(arena, Tex_Named_Value_Type)
+		node.value_type  = named
+		list_push(&l, node)
+	}
+
+	return
+}
+
+@private
+value_types :: proc(arena: ^B.Arena, results: ..Value_Type) -> (l: List(Tex_Value_Type_Node)) {
 	for result in results {
 		node             := B.arena_push(arena, Tex_Value_Type_Node)
 		node^.value_type  = result
@@ -393,13 +401,38 @@ tex_par_test_results :: proc(arena: ^B.Arena, results: ..Value_Type) -> (l: List
 }
 
 @test
+tex_par_parse_named_value_types_test :: proc(t: ^testing.T) {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+
+	tests := []struct{input: string, named_value_types: List(Tex_Named_Value_Type)}{
+		{"(local)", {}},
+		{"(local i32)", named_value_types_simple(temp, .I32)},
+		{"(local i32 i64) (local f32 f64)", named_value_types_simple(temp, .I32, .I64, .F32, .F64)},
+		{"(local $hello i32)", named_value_types_full(temp, { id = "$hello", value_type = .I32 })},
+	}
+
+	for test in tests {
+		p                 := tex_par_test_parser(test.input)
+		p.arena            = temp
+		named_value_types := tex_par_parse_named_value_type(&p, .Local)
+
+		tex_par_test_expect_list_equal(
+			t,
+			named_value_types,
+			test.named_value_types,
+			proc(a, b: Tex_Named_Value_Type) -> bool { return a.id == b.id && a.value_type == b.value_type },
+		)
+	}
+}
+
+@test
 tex_par_parse_func_type_decl_test_valid :: proc(t: ^testing.T) {
 	temp := B.TEMP_ALLOCATOR_GUARD()
 
 	tests := []struct{input: string, func_type: Tex_Func_Type}{
-		{"(param i32 i32 i32) (result i32 i32)", {tex_par_test_params(temp, {value_type = .I32}, {value_type = .I32}, {value_type = .I32}), tex_par_test_results(temp, .I32, .I32)}},
-		{"(param $hello i32) (result)", {tex_par_test_params(temp, {id = "$hello", value_type = .I32}), tex_par_test_results(temp)}},
-		{"(param $hello i32) (param $world f64) (result)", {tex_par_test_params(temp, {id = "$hello", value_type = .I32}, {id = "$world", value_type = .F64}), tex_par_test_results(temp)}},
+		{"(param i32 i32 i32) (result i32 i32)", {named_value_types_simple(temp, .I32, .I32, .I32), value_types(temp, .I32, .I32)}},
+		{"(param $hello i32) (result)", {named_value_types_full(temp, {id = "$hello", value_type = .I32}), value_types(temp)}},
+		{"(param $hello i32) (param $world f64) (result)", {named_value_types_full(temp, {id = "$hello", value_type = .I32}, {id = "$world", value_type = .F64}), value_types(temp)}},
 		{"(param) (result)", {}},
 	}
 

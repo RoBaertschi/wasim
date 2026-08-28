@@ -16,8 +16,8 @@ Tex_Value_Type_Node :: struct {
 	value_type: Value_Type,
 }
 
-Tex_Param :: struct {
-	next:       ^Tex_Param,
+Tex_Named_Value_Type :: struct {
+	next:       ^Tex_Named_Value_Type,
 	id:         string,
 	value_type: Value_Type,
 }
@@ -30,7 +30,7 @@ Tex_Index :: struct {
 }
 
 Tex_Func_Type :: struct {
-	params:  List(Tex_Param),
+	params:  List(Tex_Named_Value_Type),
 	results: List(Tex_Value_Type_Node),
 }
 
@@ -40,8 +40,9 @@ Tex_Type_Use :: struct {
 }
 
 Tex_Func :: struct {
-	next:  ^Tex_Func,
-	range: Tex_Range,
-	id:    string,
-	use:   Tex_Type_Use,
+	next:   ^Tex_Func,
+	range:  Tex_Range,
+	id:     string,
+	use:    Tex_Type_Use,
+	locals: List(Tex_Named_Value_Type),
 }
