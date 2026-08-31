@@ -230,7 +230,7 @@ tex_par_parse_value_types :: proc(p: ^Tex_Parser, keyword: Tex_Token_Kind) -> (v
 }
 
 tex_par_parse_func_type_decl :: proc(p: ^Tex_Parser) -> (func_type: Tex_Func_Type) {
-	func_type.params = tex_par_parse_named_value_type(p, .Param)
+	func_type.params  = tex_par_parse_named_value_type(p, .Param)
 	func_type.results = tex_par_parse_value_types(p, .Result)
 
 	return
@@ -460,7 +460,7 @@ tex_par_parse_func_type_decl_test_invalid :: proc(t: ^testing.T) {
 	for test in tests {
 		p         := tex_par_test_parser(test.input, nil, nil)
 		p.arena    = temp
-		_ = tex_par_parse_func_type_decl(&p)
+		_          = tex_par_parse_func_type_decl(&p)
 
 		testing.expect_value(t, p.errors, test.errors)
 	}
