@@ -77,11 +77,13 @@ arena_push :: proc{
 	arena_push_clone,
 }
 
-arena_bootstrap_new_member :: proc($T: typeid, $member: string) -> ^T where intrinsics.type_has_field(T, member), intrinsics.type_field_type(T, member) == ^Arena {
-	return arena_bootstrap_new_offset(T, offset_of_by_string(T, member))
+arena_bootstrap_new_member :: proc($T: typeid, $member: string, commited: uint = 0, reserved: uint = runtime.Gigabyte * 2, flags: Arena_Flags = {}) -> ^T
+	where intrinsics.type_has_field(T, member), intrinsics.type_field_type(T, member) == ^Arena
+{
+	return arena_bootstrap_new_offset(T, offset_of_by_string(T, member), commited, reserved, flags)
 }
 
-arena_bootstrap_new_offset :: proc($T: typeid, offset: uintptr) -> (ptr: ^T) {
+arena_bootstrap_new_offset :: proc($T: typeid, offset: uintptr, commited: uint = 0, reserved: uint = runtime.Gigabyte * 2, flags: Arena_Flags = {}) -> (ptr: ^T) {
 	arena := arena_alloc()
 
 	ptr = arena_push(arena, T)

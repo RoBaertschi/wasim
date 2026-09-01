@@ -1,9 +1,13 @@
+#+vet explicit-allocators
 package wopt
 
 // SSA definition, based on the Go SSA: https://github.com/golang/go/tree/master/src/cmd/compile/internal/ssa
 
 Operator :: enum {
-	InitMemory,
+	Init_Memory,
+	Memory_Tuple_Make,
+	Select_Value,
+	Select_Memory,
 	Const32,
 }
 
