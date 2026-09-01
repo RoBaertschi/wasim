@@ -11,14 +11,17 @@ import B "../base"
 
 // Types
 
-Type_Id :: distinct u32
+// NOTE: Type_Id's can only be compared equal and are non-deterministic
+//       They represent an offset into the interner static memory
+//       There is no guarantee that there are any Type_Id's besides this one, do not assume such a guarantee
+Type_Id :: distinct uint
 
 // NOTE: No integer type is signed or unsigned, operations define signedness, not type
 Builtin_Type :: enum {
 	I32,
 }
 
-Type_Kind :: enum {
+Type_Kind :: enum u8 {
 	// Empty/No type
 	None,
 	// Memory type, some values return this or return a tuple which contains a memory.
@@ -31,17 +34,22 @@ Type_Kind :: enum {
 	Builtin,
 }
 
-Type :: struct {
+// The actual key of the type, what makes the type unique
+Type_Key :: struct {
 	kind:    Type_Kind,
-	id:      Type_Id,
-	name:    string, // for debug purposes
-	size:    int,
-	align:   int,
 	members: []Type_Id,
 }
 
+Type :: struct {
+	using key: Type_Key,
+
+	id:    Type_Id,
+	size:  int,
+	align: int,
+}
+
 builtin_type_types := [Builtin_Type]Type{
-	.I32 = { kind = .Builtin, name = "i32", size = 4, align = 4 },
+	.I32 = { kind = .Builtin, size = 4, align = 4 },
 }
 
 type_add :: proc(m: ^Module, type: Type) -> (id: Type_Id) {
@@ -49,7 +57,6 @@ type_add :: proc(m: ^Module, type: Type) -> (id: Type_Id) {
 	type_ptr, _ := xar.append_and_get_ptr(&m.types, type)
 	type_ptr.id  = id
 
-	type_ptr.name, _ = strings.intern_get(&m.interner, type.name)
 	return
 }
 
@@ -139,8 +146,8 @@ module_new :: proc() -> (m: ^Module) {
 	//       the strings themselves are ok to be stored in the arena
 	strings.intern_init(&m.interner, B.arena_allocator(m.arena), os.heap_allocator())
 
-	assert(type_add(m, { name = "<none>" }) == 0)
-	type_add(m, { kind = .Memory, name = "mem" })
+	assert(type_add(m, {}) == 0)
+	type_add(m, { kind = .Memory })
 
 	for type in Builtin_Type {
 		m.bultin_types[type] = type_add(m, builtin_type_types[type])
@@ -176,7 +183,7 @@ main :: proc() {
 
 	fmt.println("Types:")
 	for it := xar.iterator(&m.types); type in xar.iterate_by_val(&it) {
-		fmt.printfln("  %q: Kind = %v, Id = %v, size = %x, align = %x", type.name, type.kind, type.id, type.size, type.align)
+		fmt.printfln("  - Kind = %v, Id = %v, size = %x, align = %x", type.kind, type.id, type.size, type.align)
 	}
 	fmt.println("Functions:")
 	for it := xar.iterator(&m.functions); function in xar.iterate_by_val(&it) {
