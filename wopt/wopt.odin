@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package wopt
 
+import "core:slice"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -40,6 +41,21 @@ Type_Key :: struct {
 	members: []Type_Id,
 }
 
+type_key_equal :: proc(a, b: Type_Key) -> bool {
+	if a.kind != b.kind {
+		return false
+	}
+
+	return slice.equal(a.members, b.members)
+}
+
+type_key_make :: proc(arena: ^B.Arena, kind: Type_Kind, members: ..Type_Id) -> (key: Type_Key) {
+	key.kind    = kind
+	key.members = B.arena_push_make(arena, []Type_Id, len(members))
+	copy(key.members, members)
+	return
+}
+
 Type :: struct {
 	using key: Type_Key,
 
@@ -50,6 +66,12 @@ Type :: struct {
 
 builtin_type_types := [Builtin_Type]Type{
 	.I32 = { kind = .Builtin, size = 4, align = 4 },
+}
+
+type_create :: proc(key: Type_Key) -> (t: Type) {
+	t.key = key
+
+	return
 }
 
 type_add :: proc(m: ^Module, type: Type) -> (id: Type_Id) {
