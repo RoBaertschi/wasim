@@ -1,4 +1,5 @@
 {
     "enable_snippets": true,
+    "enable_semantic_tokens": true,
     "checker_args": "-vet"
 }

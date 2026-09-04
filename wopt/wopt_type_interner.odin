@@ -91,13 +91,26 @@ type_interner_free :: proc(i: ^Type_Interner) {
 Type_Hash :: distinct u64
 
 type_hash_from_type_key :: proc(key: Type_Key) -> (id: Type_Hash) {
+	key := key
+
 	hash_state: xxhash.XXH3_state
 	xxhash.XXH3_64_reset(&hash_state)
 
+	bytes_from_ptr :: proc(value: ^$T) -> []byte {
+		return ([^]byte)(value)[:size_of(T)]
+	}
+
 	xxhash.XXH3_64_update(&hash_state, {u8(key.kind)})
+	xxhash.XXH3_64_update(&hash_state, bytes_from_ptr(&key.size))
+	xxhash.XXH3_64_update(&hash_state, bytes_from_ptr(&key.align))
 	xxhash.XXH3_64_update(&hash_state, slice.reinterpret([]u8, key.members))
 
 	id = Type_Hash(xxhash.XXH3_64_digest(&hash_state))
+
+	// 0 is never a valid hash
+	if id == 0 {
+		id = 1
+	}
 	return
 }
 
@@ -193,10 +206,10 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 
 	// allocate members for newly allocate type
 	members_data: []byte
-	members_data = type_interner_thread_arena_alloc(i, arena, size_of(Type_Id) * len(type.members), align_of(Type_Id))
+	members_data = type_interner_thread_arena_alloc(i, arena, size_of(Type_Member) * len(type.members), align_of(Type_Member))
 
 	// copy members from param into our own memory
-	type_ptr.members = slice.reinterpret([]Type_Id, members_data)
+	type_ptr.members = slice.reinterpret([]Type_Member, members_data)
 	copy(type_ptr.members, type.members)
 
 	// some sanity checks
@@ -206,7 +219,7 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 	// get the type id
 	type_ptr_compressed := (uintptr(type_ptr) - i.arena.data) >> TYPE_INTERNER_TYPE_ID_COMPRESS_SHIFT
 	ensure(type_ptr_compressed <= bits.U32_MAX) // just to be sure
-	id      = Type_Id(type_ptr_compressed)
+	id = Type_Id(type_ptr_compressed)
 
 	// set the type id
 	type.id = id
@@ -229,7 +242,7 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 	new_cell.hashes[0] = hash
 
 	intrinsics.atomic_store_explicit(&load_cell.next, new_cell, .Release)
-	
+
 	return
 }
 
@@ -254,9 +267,9 @@ type_interner_intern_test :: proc(t: ^testing.T) {
 
 	arena: Type_Interner_Thread_Arena
 
-	id  := type_interner_intern(i, &arena, type_key_make(temp, .Memory_Tuple, type_get_builtin(m, .I32)))
-	id2 := type_interner_intern(i, &arena, type_key_make(temp, .Memory_Tuple, type_get_builtin(m, .I32)))
+	id  := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}))
+	id2 := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}))
 	testing.expect_value(t, id2, id)
-	id3 := type_interner_intern(i, &arena, type_key_make(temp, .Memory_Tuple, type_get_builtin(m, .I32), type_get_builtin(m, .I32)))
+	id3 := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}, {type = type_get_builtin(m, .I32)}))
 	testing.expect(t, id3 != id)
 }
