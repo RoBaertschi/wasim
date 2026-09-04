@@ -56,18 +56,19 @@ type_interner_thread_arena_alloc :: proc(i: ^Type_Interner, a: ^Type_Interner_Th
 	assert(0 <= size)
 	assert(0 <= align)
 
+	// align
 	base := uintptr(raw_data(a.data))
 	// We align using the actual data pointer, to avoid weird situations where the data ptr is weirdly aligned
 	aligned := mem.align_forward_uintptr(uintptr(a.used) + base, uintptr(align)) - base
 
-	if uintptr(len(a.data)) < aligned + uintptr(size) {
+	if uintptr(len(a.data)) < aligned + uintptr(size) { // out of space
 		sync.lock(&i.mutex)
 		a.data = B.arena_push_make(i.arena, []byte, max(TYPE_INTERNER_THREAD_LOCAL_SIZE, size), uint(mem.PAGE_SIZE))
 		a.used = 0
 		sync.unlock(&i.mutex)
 
 		data = type_interner_thread_arena_alloc(i, a, size, align)
-	} else {
+	} else { // enough space
 		a.used = uint(aligned) + uint(size)
 		data   = a.data[aligned:aligned+uintptr(size)]
 	}

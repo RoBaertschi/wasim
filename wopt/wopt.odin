@@ -99,7 +99,8 @@ type_get :: proc(m: ^Module, id: Type_Id) -> ^Type {
 Function_Id :: distinct u32
 
 Function_Flag :: enum {
-	Frozen,
+	// Internal flags
+	_Frozen,
 }
 
 Function_Flags :: bit_set[Function_Flag]
