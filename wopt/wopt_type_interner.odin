@@ -265,11 +265,14 @@ type_interner_intern_test :: proc(t: ^testing.T) {
 	defer type_interner_free(i)
 	temp := B.TEMP_ALLOCATOR_GUARD()
 
+
+	type_i32 := type_intern_key(m, type_key_make(m, temp, .I32))
+
 	arena: Type_Interner_Thread_Arena
 
-	id  := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}))
-	id2 := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}))
+	id  := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}))
+	id2 := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}))
 	testing.expect_value(t, id2, id)
-	id3 := type_interner_intern(i, &arena, type_key_make(temp, .Results, {type = type_get_builtin(m, .I32)}, {type = type_get_builtin(m, .I32)}))
+	id3 := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}, {type = type_i32}))
 	testing.expect(t, id3 != id)
 }

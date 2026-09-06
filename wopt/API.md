@@ -1,5 +1,9 @@
 # API design scratch book
 
+## Open questions
+
+- [ ] We always return a memory in a function, should the user have to handle that?
+
 ## V2
 
 ```odin
