@@ -21,10 +21,10 @@ TYPE_INTERNER_MUTEX_STRIPE_SIZE :: 1 << 10 // 1024
 TYPE_INTERNER_MUTEX_STRIPE_MASK :: TYPE_INTERNER_MUTEX_STRIPE_SIZE - 1
 TYPE_INTERNER_THREAD_LOCAL_SIZE :: runtime.Megabyte * 2
 
-TYPE_INTERNER_CELL_COUNT :: 1 << 17 // 2M
+TYPE_INTERNER_CELL_COUNT :: 1 << 17 // 1M
 TYPE_INTERNER_CELL_MASK  :: TYPE_INTERNER_CELL_COUNT - 1
 
-TYPE_INTERNER_CACHE_LINE_SIZE  :: 64 * 2
+TYPE_INTERNER_CACHE_LINE_SIZE :: 64 * 2
 
 TYPE_INTERNER_TYPE_ID_COMPRESS_SHIFT :: uint(intrinsics.constant_log2(align_of(Type)))
 
@@ -54,7 +54,7 @@ Type_Interner_Thread_Arena :: struct {
 
 type_interner_thread_arena_alloc :: proc(i: ^Type_Interner, a: ^Type_Interner_Thread_Arena, size, align: int) -> (data: []byte) {
 	assert(0 <= size)
-	assert(0 <= align)
+	assert(0 <  align)
 
 	// align
 	base := uintptr(raw_data(a.data))
@@ -170,7 +170,7 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 	// no entry found
 
 	// find mutex
-	mutex_index := len(i.mutexes) & TYPE_INTERNER_MUTEX_STRIPE_MASK
+	mutex_index := cell_index & TYPE_INTERNER_MUTEX_STRIPE_MASK
 	mutex       := &i.mutexes[mutex_index]
 
 	// lock stripe
@@ -214,7 +214,7 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 
 	// some sanity checks
 	assert(len(type_ptr.members) == len(type.members))
-	assert((uintptr(type_ptr) & (uintptr(TYPE_INTERNER_TYPE_ID_COMPRESS_SHIFT) - 1)) == 0)
+	assert((uintptr(type_ptr) & (uintptr(1 << TYPE_INTERNER_TYPE_ID_COMPRESS_SHIFT) - 1)) == 0)
 
 	// get the type id
 	type_ptr_compressed := (uintptr(type_ptr) - i.arena.data) >> TYPE_INTERNER_TYPE_ID_COMPRESS_SHIFT
@@ -222,7 +222,7 @@ type_interner_intern :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Are
 	id = Type_Id(type_ptr_compressed)
 
 	// set the type id
-	type.id = id
+	type_ptr.id = id
 
 	// find and set next free cell
 	for index in 0..<len(load_cell.hashes) {
@@ -252,27 +252,86 @@ type_interner_get :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena,
 	return
 }
 
+type_interner_none :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena) -> Type_Id {
+	return type_interner_intern(i, arena, {})
+}
+
+type_interner_i32 :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena) -> Type_Id {
+	return type_interner_intern(i, arena, { kind = .I32, size = 4, align = 4 })
+}
+
+type_interner_mem :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena) -> Type_Id {
+	return type_interner_intern(i, arena, { kind = .Memory })
+}
+
+type_interner_result :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena, value: Type_Id) -> Type_Id {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+	type := type_interner_load(i, value)
+	return type_interner_intern(i, arena, type_key_result(temp, type))
+}
+
+type_interner_struct_simple :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena, members: ..Type_Id) -> Type_Id {
+	temp := B.TEMP_ALLOCATOR_GUARD()
+
+	member_types := B.arena_push_make(temp, []Type, len(members))
+	for &member_type, index in member_types {
+		member_type = type_interner_load(i, members[index])
+	}
+
+	return type_interner_intern(i, arena, type_key_struct_simple(temp, ..member_types))
+}
+
+type_interner_struct :: proc(
+	i: ^Type_Interner,
+	arena: ^Type_Interner_Thread_Arena,
+	size, align: int,
+	members: ..Type_Member,
+) -> Type_Id {
+	return type_interner_intern(i, arena, { kind = .Struct, size = size, align = align, members = members })
+}
+
 // Tests
 
 import "core:testing"
 
 @test
 type_interner_intern_test :: proc(t: ^testing.T) {
-	m := module_new()
-	defer module_free(m)
-
 	i := type_interner_new()
 	defer type_interner_free(i)
-	temp := B.TEMP_ALLOCATOR_GUARD()
-
-
-	type_i32 := type_intern_key(m, type_key_make(m, temp, .I32))
 
 	arena: Type_Interner_Thread_Arena
 
-	id  := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}))
-	id2 := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}))
+	t_i32 := type_interner_i32(i, &arena)
+
+	id  := type_interner_struct_simple(i, &arena, t_i32)
+	id2 := type_interner_struct_simple(i, &arena, t_i32)
 	testing.expect_value(t, id2, id)
-	id3 := type_interner_intern(i, &arena, type_key_make(m, temp, .Struct, {type = type_i32}, {type = type_i32}))
+	testing.expect(t, id != t_i32)
+	id3 := type_interner_struct_simple(i, &arena, t_i32, t_i32)
 	testing.expect(t, id3 != id)
+	testing.expect(t, id3 != t_i32)
+}
+
+@test
+type_interner_intern_non_zero_id :: proc(t: ^testing.T) {
+	i := type_interner_new()
+	defer type_interner_free(i)
+
+	arena: Type_Interner_Thread_Arena
+
+	id := type_interner_i32(i, &arena)
+	testing.expect(t, id == type_interner_load(i, id).id)
+	testing.expect(t, id != 0)
+	testing.expect_value(t, type_interner_none(i, &arena), 0)
+}
+
+@test
+type_interner_intern_struct_simple :: proc(t: ^testing.T) {
+	i := type_interner_new()
+	defer type_interner_free(i)
+
+	arena: Type_Interner_Thread_Arena
+
+	// checks for an assert inside align_forward to ensure that a 0 align does not fail
+	type_interner_struct_simple(i, &arena)
 }
