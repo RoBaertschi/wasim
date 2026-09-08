@@ -13,10 +13,14 @@ import B "../base"
 
 Function_Id :: distinct u32
 
+FUNCTION_NONE :: Function_Id(0)
+
 Function_Flag :: enum {
 	Always_Inline,
 	Never_Inline,
 	// Internal flags
+	_In_Progress, // TODO(robin): make this an extra state enum?
+	_Build_Done,
 }
 
 Function_Flags :: bit_set[Function_Flag]
@@ -53,7 +57,7 @@ Function :: struct {
 // Parameters:
 //  m           - the module to add the function to
 //  name        - name of the function, used for abi and linking
-//  result_type - return type of the function, currently must be a `Type_Kind.Result`(see `type_result`)
+//  result_type - return type of the function
 //  parameters  - the type of parameters the function takes in
 //  flags       - optional flags changing optimization/code generation behaviour
 //
@@ -65,8 +69,6 @@ function_add :: proc(m: ^Module, name: string, result_type: Type_Id, parameter: 
 	}
 
 	assert(!(.Never_Inline in flags && .Always_Inline in flags), "Always_Inline and Never_Inline cannot both be specified on the same function")
-	assert(type_get(m, result_type).kind == .Result, "result_type.kind != .Result, functions in wopt must return a type of kind Result, this is to adhere to the memory requirements of the SSA form")
-
 	function := Function {
 		name       = name,
 		flags      = flags,
@@ -83,6 +85,14 @@ function_add :: proc(m: ^Module, name: string, result_type: Type_Id, parameter: 
 
 	function_ptr.name, _ = strings.intern_get(&m.interner, function.name)
 	return
+}
+
+function_get :: proc(m: ^Module, id: Function_Id) -> Function {
+	return xar.get(&m.functions, id)
+}
+
+function_get_ptr :: proc(m: ^Module, id: Function_Id) -> ^Function {
+	return xar.get_ptr(&m.functions, id)
 }
 
 // Module
@@ -129,6 +139,10 @@ module_freeze_for_build :: proc(m: ^Module) {
 	m.frozen = true
 }
 
+module_is_frozen :: proc(m: ^Module) -> bool {
+	return m.frozen
+}
+
 main :: proc() {
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator, context.allocator)
@@ -145,9 +159,42 @@ main :: proc() {
 	}
 
 	m := module_new()
-	defer module_free(m)
+  defer module_free(m)
 
-	function_add(m, "main", type_result(m, type_i32(m)))
+  type_i32 := type_i32(m)
+
+  func_id := function_add(m, "main", /* result */ type_i32, /* parameters */ type_i32, type_i32, flags = {})
+
+  module_freeze_for_build(m)
+  ensure(module_is_frozen(m))
+
+  tbctx := thread_build_context_new(m)
+  defer thread_build_context_free(tbctx)
+
+  {
+    build_function_begin(tbctx, func_id)
+
+    block_id := build_begin_block(tbctx, .Exit)
+    memory_value := build_value_init_memory(tbctx)
+    const_value  := build_value_const32(tbctx, 69)
+    _ = build_value_return(tbctx, const_value)
+
+    build_block_set_control_value(tbctx, memory_value)
+    build_end_block(tbctx)
+
+    build_set_start_block(tbctx, block_id)
+
+    build_function_end(tbctx)
+  }
+
+  p := SSA_Printer {
+  	writer = os.to_writer(os.stdout),
+   	module = m,
+    options = {
+    	indent = "\t",
+    },
+  }
+  ssa_write_function_build_body(&p, func_id)
 
 	// fmt.println("Types:")
 	// for it := xar.iterator(&m.types); type in xar.iterate_by_val(&it) {
@@ -166,5 +213,5 @@ module_function_add_not_zero :: proc(t: ^testing.T) {
 	m := module_new()
 	defer module_free(m)
 
-	testing.expect(t, function_add(m, "", type_result(m, type_i32(m))) != 0)
+	testing.expect(t, function_add(m, "", type_i32(m)) != 0)
 }

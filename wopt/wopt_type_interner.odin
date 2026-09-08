@@ -264,12 +264,6 @@ type_interner_mem :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena)
 	return type_interner_intern(i, arena, { kind = .Memory })
 }
 
-type_interner_result :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena, value: Type_Id) -> Type_Id {
-	temp := B.TEMP_ALLOCATOR_GUARD()
-	type := type_interner_load(i, value)
-	return type_interner_intern(i, arena, type_key_result(temp, type))
-}
-
 type_interner_struct_simple :: proc(i: ^Type_Interner, arena: ^Type_Interner_Thread_Arena, members: ..Type_Id) -> Type_Id {
 	temp := B.TEMP_ALLOCATOR_GUARD()
 

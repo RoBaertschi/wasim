@@ -58,6 +58,16 @@ xar_chunk_cap :: #force_inline proc(array: ^xar.Array($T, $SHIFT), index_in_chun
 	return chunk_cap
 }
 
+xar_push_copy :: proc(arena: ^Arena, array: ^xar.Array($T, $SHIFT)) -> (values: []T) {
+	values = arena_push_make(arena, []T, xar.len(array^))
+
+	for it := xar.iterator(array); value, i in xar.iterate_by_val(&it) {
+		values[i] = value
+	}
+
+	return
+}
+
 // Slices
 
 slice_map_into :: proc(from: $F/[]$FE, into: $I/[]$IE, mapper: proc(item: FE) -> IE) {
