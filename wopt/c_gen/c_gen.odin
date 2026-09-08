@@ -24,15 +24,21 @@ Proc :: struct {
 	file: ^ast.File,
 }
 
+Slice :: struct {
+	key: string,
+	c_type: string,
+	odin_type: string,
+}
+
+Type_Target :: enum { Odin, C }
+
 Model :: struct {
 	pkg: ^ast.Package,
 	prefix: string,
 	func_prefix: string,
 	named: [dynamic]Named,
 	procs: [dynamic]Proc,
-	slices: [dynamic]string,
-	slice_elements: [dynamic]string,
-	slice_odin_elements: [dynamic]string,
+	slices: [dynamic]Slice,
 	errors: int,
 }
 
@@ -129,14 +135,14 @@ collect :: proc(m: ^Model) {
 				}
 				continue
 			}
-			if has_tag(vd.attributes, "cabi") && decl_type != nil {
+			if selected && decl_type != nil {
 				append(&m.named, Named{name = name.name, type = decl_type, file = file})
 			}
-			if has_tag(vd.attributes, "cabi") && len(vd.values) == 1 {
+			if selected && len(vd.values) == 1 {
 				lit := vd.values[0].derived_expr.(^ast.Proc_Lit) or_continue
 				append(&m.procs, Proc{name = name.name, lit = lit, file = file})
 			}
-			if has_tag(vd.attributes, "cabi") && decl_type == nil && len(vd.values) != 1 {
+			if selected && decl_type == nil && len(vd.values) != 1 {
 				diagnostic(m, file, vd.pos, "selected declaration is not a supported type or procedure")
 			}
 		}
@@ -301,56 +307,47 @@ slice_key :: proc(t: string) -> string {
 	return a
 }
 
-c_type :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr) -> string {
-	return c_type_text(m, file, strings.trim_space(source_text(file, e)))
-}
-
 c_type_field :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr, flags: ast.Field_Flags) -> string {
-	if ell, is_ellipsis := e.derived_expr.(^ast.Ellipsis); is_ellipsis || .Ellipsis in flags {
-		element := strings.trim_space(source_text(file, e))
-		if is_ellipsis { element = strings.trim_space(source_text(file, ell.expr)) }
+	if element, ok := variadic_element(file, e, flags); ok {
 		key := register_slice(m, file, element)
 		return fmt.tprintf("%s_Slice_%s", m.prefix, key)
 	}
-	return c_type(m, file, e)
+	return type_expr(m, file, e, .C)
 }
 
 odin_type_field :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr, flags: ast.Field_Flags) -> string {
-	if ell, is_ellipsis := e.derived_expr.(^ast.Ellipsis); is_ellipsis || .Ellipsis in flags {
-		key := slice_key(strings.trim_space(source_text(file, e)))
-		if is_ellipsis { key = slice_key(strings.trim_space(source_text(file, ell.expr))) }
+	if element, ok := variadic_element(file, e, flags); ok {
+		key := slice_key(element)
 		return fmt.tprintf("%s_Slice_%s", m.prefix, key)
 	}
-	return odin_type_text(m, file, strings.trim_space(source_text(file, e)))
+	return type_expr(m, file, e, .Odin)
 }
 
-odin_type :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr) -> string {
-	return odin_type_text(m, file, strings.trim_space(source_text(file, e)))
+variadic_element :: proc(file: ^ast.File, e: ^ast.Expr, flags: ast.Field_Flags) -> (string, bool) {
+	ell, is_ellipsis := e.derived_expr.(^ast.Ellipsis)
+	if !is_ellipsis && .Ellipsis not_in flags { return "", false }
+	if is_ellipsis { return strings.trim_space(source_text(file, ell.expr)), true }
+	return strings.trim_space(source_text(file, e)), true
 }
 
-odin_type_text :: proc(m: ^Model, file: ^ast.File, t: string) -> string {
-	switch t {
-	case "bool", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "int", "uint", "f32", "f64", "rawptr":
-		return t
-	case "string": return fmt.tprintf("%s_String", m.prefix)
-	}
-	if strings.has_prefix(t, "^") { return fmt.tprintf("^%s", odin_type_text(m, file, strings.trim_space(t[1:]))) }
-	if strings.has_prefix(t, "[]") || strings.has_prefix(t, "..") { return fmt.tprintf("%s_Slice_%s", m.prefix, slice_key(t[2:])) }
-	if n, ok := named(m, t); ok { return fmt.tprintf("%s_%s", m.prefix, n.name) }
-	return t
+type_expr :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr, target: Type_Target) -> string {
+	return type_text(m, file, strings.trim_space(source_text(file, e)), target)
 }
 
-c_type_text :: proc(m: ^Model, file: ^ast.File, t: string) -> string {
-	if b := c_builtin(t); b != "" { return b }
+type_text :: proc(m: ^Model, file: ^ast.File, t: string, target: Type_Target) -> string {
+	if b := c_builtin(t); b != "" { if target == .C { return b }; return t }
 	if t == "string" { return fmt.tprintf("%s_String", m.prefix) }
-	if strings.has_prefix(t, "^") { return fmt.tprintf("%s *", c_type_text(m, file, strings.trim_space(t[1:]))) }
+	if strings.has_prefix(t, "^") {
+		inner := type_text(m, file, strings.trim_space(t[1:]), target)
+		if target == .C { return fmt.tprintf("%s *", inner) }
+		return fmt.tprintf("^%s", inner)
+	}
 	if strings.has_prefix(t, "[]") || strings.has_prefix(t, "..") {
-		key := register_slice(m, file, t[2:])
+		key := slice_key(t[2:])
+		if target == .C { key = register_slice(m, file, t[2:]) }
 		return fmt.tprintf("%s_Slice_%s", m.prefix, key)
 	}
-	if n, ok := named(m, t); ok {
-		return fmt.tprintf("%s_%s", m.prefix, n.name)
-	}
+	if n, ok := named(m, t); ok { return fmt.tprintf("%s_%s", m.prefix, n.name) }
 	return t
 }
 
@@ -358,30 +355,12 @@ register_slice :: proc(m: ^Model, file: ^ast.File, element: string) -> string {
 	element_text := strings.trim_space(element)
 	key := slice_key(element_text)
 	for existing in m.slices {
-		if existing == key { return key }
+		if existing.key == key { return key }
 	}
-	element_c := element_c_type(m, file, element_text)
-	element_odin := element_odin_type(m, file, element_text)
-	append(&m.slices, key)
-	append(&m.slice_elements, element_c)
-	append(&m.slice_odin_elements, element_odin)
+	element_c := type_text(m, file, element_text, .C)
+	element_odin := type_text(m, file, element_text, .Odin)
+	append(&m.slices, Slice{key = key, c_type = element_c, odin_type = element_odin})
 	return key
-}
-
-element_c_type :: proc(m: ^Model, file: ^ast.File, element: string) -> string {
-	if strings.has_prefix(element, "[]") || strings.has_prefix(element, "..") {
-		key := register_slice(m, file, element[2:])
-		return fmt.tprintf("%s_Slice_%s", m.prefix, key)
-	}
-	return c_type_text(m, file, element)
-}
-
-element_odin_type :: proc(m: ^Model, file: ^ast.File, element: string) -> string {
-	if strings.has_prefix(element, "[]") || strings.has_prefix(element, "..") {
-		key := register_slice(m, file, element[2:])
-		return fmt.tprintf("%s_Slice_%s", m.prefix, key)
-	}
-	return odin_type_text(m, file, element)
 }
 
 emit_header :: proc(m: ^Model) -> string {
@@ -389,12 +368,12 @@ emit_header :: proc(m: ^Model) -> string {
 		if n.opaque { continue }
 		#partial switch t in n.type.derived_expr {
 		case ^ast.Struct_Type:
-			for f in t.fields.list { _ = c_type(m, n.file, f.type) }
+			for f in t.fields.list { _ = type_expr(m, n.file, f.type, .C) }
 		}
 	}
 	for p in m.procs {
 		for f in p.lit.type.params.list { _ = c_type_field(m, p.file, f.type, f.flags) }
-		if p.lit.type.results != nil { for f in p.lit.type.results.list { _ = c_type(m, p.file, f.type) } }
+		if p.lit.type.results != nil { for f in p.lit.type.results.list { _ = type_expr(m, p.file, f.type, .C) } }
 	}
 	b: strings.Builder
 	fmt.sbprintln(&b, MARKER)
@@ -416,10 +395,10 @@ emit_header :: proc(m: ^Model) -> string {
 		case ^ast.Struct_Type:
 			continue
 		case ^ast.Distinct_Type:
-			fmt.sbprintf(&b, "typedef %s %s_%s;\n", c_type(m, n.file, t.type), m.prefix, n.name)
+			fmt.sbprintf(&b, "typedef %s %s_%s;\n", type_expr(m, n.file, t.type, .C), m.prefix, n.name)
 		case ^ast.Enum_Type:
 			base := "intptr_t"
-			if t.base_type != nil { base = c_type(m, n.file, t.base_type) }
+			if t.base_type != nil { base = type_expr(m, n.file, t.base_type, .C) }
 			fmt.sbprintf(&b, "typedef %s %s_%s;\n", base, m.prefix, n.name)
 			value := 0
 			for e in t.fields { value = emit_enum_c(&b, m, n, e, value) }
@@ -433,23 +412,23 @@ emit_header :: proc(m: ^Model) -> string {
 			if bits > 16 { base = "uint32_t" }
 			if bits > 32 { base = "uint64_t" }
 			if bits > 64 { diagnostic(m, n.file, t.pos, "bit sets wider than 64 bits are unsupported") }
-			if t.underlying != nil { base = c_type(m, n.file, t.underlying) }
+			if t.underlying != nil { base = type_expr(m, n.file, t.underlying, .C) }
 			fmt.sbprintf(&b, "typedef %s %s_%s;\n", base, m.prefix, n.name)
 			value := 0
 			enum_named := n
 			enum_named.file = enum_file
 			for e in et.fields { value = emit_bit_c(&b, m, enum_named, e, value, base, low) }
 		case:
-			fmt.sbprintf(&b, "typedef %s %s_%s;\n", c_type(m, n.file, n.type), m.prefix, n.name)
+			fmt.sbprintf(&b, "typedef %s %s_%s;\n", type_expr(m, n.file, n.type, .C), m.prefix, n.name)
 		}
 	}
-	for s, i in m.slices { fmt.sbprintf(&b, "typedef struct %s_Slice_%s {{ const %s *data; uintptr_t len; }} %s_Slice_%s;\n", m.prefix, s, m.slice_elements[i], m.prefix, s) }
+	for s in m.slices { fmt.sbprintf(&b, "typedef struct %s_Slice_%s {{ const %s *data; uintptr_t len; }} %s_Slice_%s;\n", m.prefix, s.key, s.c_type, m.prefix, s.key) }
 	states := make(map[string]int)
 	for n in m.named { emit_struct_c(&b, m, n, &states) }
 	for p in m.procs {
 		if p.lit.type.results != nil && len(p.lit.type.results.list) > 1 {
 			fmt.sbprintf(&b, "typedef struct %s_%s_Result {{\n", m.prefix, p.name)
-			for f, i in p.lit.type.results.list { fmt.sbprintf(&b, "    %s r%d;\n", c_type(m, p.file, f.type), i) }
+			for f, i in p.lit.type.results.list { fmt.sbprintf(&b, "    %s r%d;\n", type_expr(m, p.file, f.type, .C), i) }
 			fmt.sbprintf(&b, "}} %s_%s_Result;\n", m.prefix, p.name)
 		}
 	}
@@ -491,11 +470,7 @@ enum_range :: proc(m: ^Model, file: ^ast.File, et: ^ast.Enum_Type) -> (low, high
 	low, high = max(int), min(int)
 	value := 0
 	for e in et.fields {
-		if fv, ok := e.derived_expr.(^ast.Field_Value); ok {
-			parsed, valid := strconv.parse_int(strings.trim_space(source_text(file, fv.value)))
-			if !valid { diagnostic(m, file, e.pos, "enum values must be integer literals") }
-			value = parsed
-		}
+		_, value = enum_entry(m, file, e, value, "enum", true)
 		low, high = min(low, value), max(high, value)
 		value += 1
 	}
@@ -503,41 +478,39 @@ enum_range :: proc(m: ^Model, file: ^ast.File, et: ^ast.Enum_Type) -> (low, high
 	return
 }
 
+enum_entry :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr, current: int, kind: string, range_check := false) -> (name: string, value: int) {
+	value = current
+	#partial switch x in e.derived_expr {
+	case ^ast.Ident:
+		name = x.name
+	case ^ast.Field_Value:
+		name = x.field.derived_expr.(^ast.Ident).name
+		literal := strings.trim_space(source_text(file, x.value))
+		parsed, ok := strconv.parse_int(literal)
+		value = parsed
+		if !ok {
+			if range_check { diagnostic(m, file, e.pos, "enum values must be integer literals") }
+			else { diagnostic(m, file, x.value.pos, fmt.tprintf("%s value %s is not an integer literal", kind, literal)) }
+		}
+	}
+	return
+}
+
 emit_field_c :: proc(b: ^strings.Builder, m: ^Model, file: ^ast.File, f: ^ast.Field) {
 	if len(f.names) != 1 { return }
 	name, ok := f.names[0].derived_expr.(^ast.Ident)
 	if !ok { return }
-	fmt.sbprintf(b, "    %s %s;\n", c_type(m, file, f.type), name.name)
+	fmt.sbprintf(b, "    %s %s;\n", type_expr(m, file, f.type, .C), name.name)
 }
 
 emit_enum_c :: proc(b: ^strings.Builder, m: ^Model, n: Named, e: ^ast.Expr, current: int) -> int {
-	name := ""
-	value := current
-	#partial switch x in e.derived_expr {
-	case ^ast.Ident: name = x.name
-	case ^ast.Field_Value:
-		name = x.field.derived_expr.(^ast.Ident).name
-		literal := strings.trim_space(source_text(n.file, x.value))
-		parsed, ok := strconv.parse_int(literal)
-		if !ok { diagnostic(m, n.file, x.value.pos, fmt.tprintf("enum value %s is not an integer literal", literal)) }
-		value = parsed
-	}
+	name, value := enum_entry(m, n.file, e, current, "enum")
 	if name != "" { fmt.sbprintf(b, "#define %s_%s_%s ((%s_%s)(%d))\n", m.prefix, n.name, name, m.prefix, n.name, value) }
 	return value + 1
 }
 
 emit_bit_c :: proc(b: ^strings.Builder, m: ^Model, n: Named, e: ^ast.Expr, current: int, base: string, low: int) -> int {
-	name := ""
-	value := current
-	#partial switch x in e.derived_expr {
-	case ^ast.Ident: name = x.name
-	case ^ast.Field_Value:
-		name = x.field.derived_expr.(^ast.Ident).name
-		literal := strings.trim_space(source_text(n.file, x.value))
-		parsed, ok := strconv.parse_int(literal)
-		if !ok { diagnostic(m, n.file, x.value.pos, fmt.tprintf("bit-set value %s is not an integer literal", literal)) }
-		value = parsed
-	}
+	name, value := enum_entry(m, n.file, e, current, "bit-set")
 	literal := bit_literal(base)
 	if name != "" { fmt.sbprintf(b, "#define %s_%s_%s ((%s_%s)(%s << %d))\n", m.prefix, n.name, name, m.prefix, n.name, literal, value-low) }
 	return value + 1
@@ -570,7 +543,7 @@ emit_proc_decl :: proc(b: ^strings.Builder, m: ^Model, p: Proc) {
 
 result_c_type :: proc(m: ^Model, p: Proc) -> string {
 	if p.lit.type.results == nil || len(p.lit.type.results.list) == 0 { return "void" }
-	if len(p.lit.type.results.list) == 1 { return c_type(m, p.file, p.lit.type.results.list[0].type) }
+	if len(p.lit.type.results.list) == 1 { return type_expr(m, p.file, p.lit.type.results.list[0].type, .C) }
 	return fmt.tprintf("%s_%s_Result", m.prefix, p.name)
 }
 
@@ -582,14 +555,14 @@ emit_wrappers :: proc(m: ^Model) -> string {
 	fmt.sbprintln(&b, "import \"base:runtime\"")
 	fmt.sbprintln(&b, "")
 	fmt.sbprintf(&b, "%s_String :: struct {{ data: ^u8, len: uintptr }}\n", m.prefix)
-	for s, i in m.slices { fmt.sbprintf(&b, "%s_Slice_%s :: struct {{ data: ^%s, len: uintptr }}\n", m.prefix, s, m.slice_odin_elements[i]) }
+	for s in m.slices { fmt.sbprintf(&b, "%s_Slice_%s :: struct {{ data: ^%s, len: uintptr }}\n", m.prefix, s.key, s.odin_type) }
 	for n in m.named {
 		fmt.sbprintf(&b, "%s_%s :: %s\n", m.prefix, n.name, n.name)
 	}
 	for p in m.procs {
 		if p.lit.type.results != nil && len(p.lit.type.results.list) > 1 {
 			fmt.sbprintf(&b, "%s_%s_Result :: struct {{", m.prefix, p.name)
-			for f, i in p.lit.type.results.list { fmt.sbprintf(&b, " r%d: %s,", i, odin_type_text(m, p.file, strings.trim_space(source_text(p.file, f.type)))) }
+			for f, i in p.lit.type.results.list { fmt.sbprintf(&b, " r%d: %s,", i, type_expr(m, p.file, f.type, .Odin)) }
 			fmt.sbprintln(&b, " }")
 		}
 	}
@@ -609,7 +582,7 @@ emit_wrapper :: proc(b: ^strings.Builder, m: ^Model, p: Proc) {
 	}
 	fmt.sbprint(b, ")")
 	if t.results != nil && len(t.results.list) > 0 {
-		if len(t.results.list) == 1 { fmt.sbprintf(b, " -> %s", odin_type(m, p.file, t.results.list[0].type)) }
+		if len(t.results.list) == 1 { fmt.sbprintf(b, " -> %s", type_expr(m, p.file, t.results.list[0].type, .Odin)) }
 		else { fmt.sbprintf(b, " -> %s_%s_Result", m.prefix, p.name) }
 	}
 	fmt.sbprintln(b, " {")
@@ -660,7 +633,7 @@ wrapper_return :: proc(m: ^Model, file: ^ast.File, e: ^ast.Expr, call: string) -
 	if t == "string" { return fmt.tprintf("%s_String{{data = cast(^u8)raw_data(%s), len = uintptr(len(%s))}}", m.prefix, call, call) }
 	if strings.has_prefix(t, "[]") {
 		key := slice_key(t[2:])
-		element := odin_type_text(m, file, strings.trim_space(t[2:]))
+		element := type_text(m, file, strings.trim_space(t[2:]), .Odin)
 		return fmt.tprintf("%s_Slice_%s{{data = cast(^%s)raw_data(%s), len = uintptr(len(%s))}}", m.prefix, key, element, call, call)
 	}
 	return call
