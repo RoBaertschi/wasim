@@ -12,6 +12,8 @@ Thread_Build_Context :: struct {
 	module:          ^Module,
 	allocator:       mem.Allocator,
 	permanent_arena: ^B.Arena,
+	user_data:       rawptr,
+	error_callback:  SSA_Verify_Error_Callback, // gets called on invalid ssa
 
 	type_interner_arena: Type_Interner_Thread_Arena,
 
@@ -63,10 +65,6 @@ build_function_begin :: proc(tbctx: ^Thread_Build_Context, function_id: Function
 	// Zero values
 	xar.push_back(&tbctx.blocks, Block{})
 	xar.push_back(&tbctx.values, Value{})
-
-	for param, i in function.parameters {
-		assert(_build_value(tbctx, { operator = .Argument, type = param, immediate = u64(i) }) == Value_Id(i + 1))
-	}
 }
 
 build_function_end :: proc(tbctx: ^Thread_Build_Context) {
@@ -144,6 +142,16 @@ build_value_get_argument :: proc(tbctx: ^Thread_Build_Context, param_index: int,
 	return Value_Id(param_index + 1)
 }
 
+build_value_argument :: proc(tbctx: ^Thread_Build_Context, parameter_index: u32) -> Value_Id {
+	type := build_type_none(tbctx)
+
+	if 0 <= parameter_index && parameter_index < u32(len(tbctx.current_function.parameters)) {
+		type = tbctx.current_function.parameters[parameter_index]
+	}
+
+	return _build_value(tbctx, { operator = .Argument, type = type, immediate = u64(parameter_index) })
+}
+
 build_value_init_memory :: proc(tbctx: ^Thread_Build_Context) -> Value_Id {
 	return _build_value(tbctx, { operator = .Init_Memory, type = build_type_mem(tbctx) })
 }
@@ -153,9 +161,6 @@ build_value_const32 :: proc(tbctx: ^Thread_Build_Context, value: u32) -> Value_I
 }
 
 build_value_return :: proc(tbctx: ^Thread_Build_Context, value_id: Value_Id) -> Value_Id {
-	value := _build_value_get(tbctx, value_id)
-	assert(value.type == tbctx.current_function.result)
-
 	args := B.arena_push_make(tbctx.permanent_arena, []Value_Id, 1)
 	args[0] = value_id
 
