@@ -10,6 +10,9 @@ Operator :: enum {
 	Init_Memory,   // Init_Memory <mem>
 	Const32,       // Const32 <i32> {immediate}
 	Return,        // Return <none> values[0]
+
+	Ir_Begin = Argument,
+	Ir_End   = Return,
 }
 
 Value_Id :: distinct u32
