@@ -135,11 +135,16 @@ ssa_write_value :: proc(p: ^SSA_Printer, body: Function_Body, value_id: Value_Id
 	return
 }
 
+ssa_write_block_id :: proc(p: ^SSA_Printer, block_id: Block_Id) -> (err: io.Error) {
+	io.write_rune(p.writer, 'b') or_return
+	io.write_u64(p.writer, u64(block_id)) or_return
+	return
+}
+
 ssa_write_block :: proc(p: ^SSA_Printer, body: Function_Body, block_id: Block_Id) -> (err: io.Error) {
 	block := body.blocks[block_id]
 
-	io.write_rune(p.writer, 'b') or_return
-	io.write_u64(p.writer, u64(block_id)) or_return
+	ssa_write_block_id(p, block_id)
 
 	switch block.kind {
 	case .Exit:
@@ -176,18 +181,9 @@ ssa_write_function_header :: proc(p: ^SSA_Printer, function: Function) -> (err: 
 	return
 }
 
-ssa_write_function_arguments :: proc(p: ^SSA_Printer, function: Function, body: Function_Body) -> (err: io.Error) {
-	for _, i in function.parameters {
-		ssa_write_value(p, body, Value_Id(i + 1)) or_return
-	}
-
-	return
-}
-
 ssa_write_function_build_body :: proc(p: ^SSA_Printer, function_id: Function_Id) -> (err: io.Error) {
 	function := function_get(p.module, function_id)
 	ssa_write_function_header(p, function) or_return
-	ssa_write_function_arguments(p, function, function.build_body) or_return
 	ssa_write_body(p, function.build_body) or_return
 
 	return

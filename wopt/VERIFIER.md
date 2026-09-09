@@ -1,7 +1,7 @@
 # Verifier
 - [ ] Return value
-- [ ] Argument parameter index
-- [ ] Argument type
+- [x] Argument parameter index
+- [x] Argument type
 - [ ] Exit block control value valid
 - [ ] Exit block control value is memory
 - [ ] Exit block no successors

@@ -31,13 +31,19 @@ Thread_Build_Context :: struct {
 	start_block:      Block_Id,
 }
 
-thread_build_context_new :: proc(m: ^Module) -> (tbctx: ^Thread_Build_Context) {
+thread_build_context_new :: proc(
+	m:              ^Module,
+	error_callback := ssa_verify_error_callback_panic,
+	user_data:      rawptr = nil,
+) -> (tbctx: ^Thread_Build_Context) {
 	assert(m != nil)
 
-	tbctx             = B.arena_bootstrap_new(Thread_Build_Context, "permanent_arena")
-	tbctx.module      = m
-	tbctx.build_arena = B.arena_alloc()
-	tbctx.allocator   = B.arena_allocator(tbctx.build_arena)
+	tbctx                = B.arena_bootstrap_new(Thread_Build_Context, "permanent_arena")
+	tbctx.module         = m
+	tbctx.error_callback = error_callback
+	tbctx.user_data      = user_data
+	tbctx.build_arena    = B.arena_alloc()
+	tbctx.allocator      = B.arena_allocator(tbctx.build_arena)
 
 	return
 }
@@ -67,19 +73,24 @@ build_function_begin :: proc(tbctx: ^Thread_Build_Context, function_id: Function
 	xar.push_back(&tbctx.values, Value{})
 }
 
-build_function_end :: proc(tbctx: ^Thread_Build_Context) {
+build_function_end :: proc(tbctx: ^Thread_Build_Context) -> (error_count: int) {
 	function := tbctx.current_function
+	function_id := tbctx.current_function_id
 
 	build_body := &function.build_body
 	build_body.blocks = B.xar_push_copy(tbctx.permanent_arena, &tbctx.blocks)
 	build_body.values = B.xar_push_copy(tbctx.permanent_arena, &tbctx.values)
 	build_body.start  = tbctx.start_block
 	function.flags += {._Build_Done}
+
+	error_count = ssa_verify_function(tbctx, function_id)
+
 	sync.atomic_and_explicit(&function.flags, ~Function_Flags{._In_Progress}, .Release)
 
 	tbctx.current_function_id = FUNCTION_NONE
 	tbctx.current_function    = nil
 	B.arena_clear(tbctx.build_arena)
+	return
 }
 
 // TODO(robin): build_block_begin?
@@ -112,8 +123,6 @@ build_end_block :: proc(tbctx: ^Thread_Build_Context, loc := #caller_location) {
 build_block_set_control_value :: proc(tbctx: ^Thread_Build_Context, value_id: Value_Id) {
 	switch tbctx.current_block.kind {
 	case .Exit:
-		value := _build_value_get(tbctx, value_id)
-		assert(value.type == build_type_mem(tbctx))
 		tbctx.block_ctrl_value = value_id
 	}
 }
@@ -127,9 +136,7 @@ _build_value :: proc(tbctx: ^Thread_Build_Context, value: Value) -> (value_id: V
 	value_ptr, _ := xar.push_back_elem_and_get_ptr(&tbctx.values, value)
 	value_ptr.id  = value_id
 
-	if tbctx.current_block_id != BLOCK_NONE {
-		xar.push_back(&tbctx.block_values, value_id)
-	}
+	xar.push_back(&tbctx.block_values, value_id)
 	return
 }
 
