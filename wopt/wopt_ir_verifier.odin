@@ -87,7 +87,15 @@ ssa_verify_function :: proc(tbctx: ^Thread_Build_Context, function_id: Function_
 			tbctx,
 			&errors,
 			function_id,
-			"",
+			"invalid start block %v",
+			block_id_string(module, function.build_body.start, temp),
+		)
+	} else if function.build_body.start == BLOCK_NONE {
+		error(
+			tbctx,
+			&errors,
+			function_id,
+			"missing start block",
 		)
 	}
 
