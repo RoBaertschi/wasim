@@ -47,6 +47,11 @@ ssa_verify_function :: proc(tbctx: ^Thread_Build_Context, function_id: Function_
 		return value_id < Value_Id(len(function_body.values))
 	}
 
+	is_block_id_valid :: proc(function_body: Function_Body, block_id: Block_Id) -> bool {
+		assert(len(function_body.blocks) <= (1 << (size_of(Value_Id) * 8)) - 1)
+		return block_id < Block_Id(len(function_body.blocks))
+	}
+
 	error_builder :: proc(module: ^Module, allocator: mem.Allocator) -> (b: ^strings.Builder, p: ^SSA_Printer) {
 		b = new(strings.Builder, allocator = allocator)
 		strings.builder_init_none(b, allocator)
@@ -74,6 +79,16 @@ ssa_verify_function :: proc(tbctx: ^Thread_Build_Context, function_id: Function_
 		p := SSA_Printer { module = module, writer = strings.to_stream(&b) }
 		ssa_write_block_id(&p, block_id)
 		return strings.to_string(b)
+	}
+
+	if !is_block_id_valid(function.build_body, function.build_body.start) {
+		temp := B.TEMP_ALLOCATOR_GUARD()
+		errorf(
+			tbctx,
+			&errors,
+			function_id,
+			"",
+		)
 	}
 
 	for block in function.build_body.blocks[1:] {

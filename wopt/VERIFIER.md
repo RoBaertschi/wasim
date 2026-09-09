@@ -1,9 +1,9 @@
 # Verifier
-- [ ] Return value
+- [x] Return value
 - [x] Argument parameter index
 - [x] Argument type
-- [ ] Exit block control value valid
-- [ ] Exit block control value is memory
+- [x] Exit block control value valid
+- [x] Exit block control value is memory
 - [ ] Exit block no successors
 - [ ] Const32 value in range
-- [ ] Start block is set
+- [x] Start block is set
