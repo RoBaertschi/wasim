@@ -4,6 +4,8 @@ package wopt
 Register     :: distinct u8
 Register_Set :: bit_set[0..=63; u64]
 
+INVALID_REGISTER :: Register(0xFF)
+
 Register_Constraint :: struct {
 	allowed: Register_Set,
 	pin:     u8,
