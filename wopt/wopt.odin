@@ -95,6 +95,27 @@ function_get_ptr :: proc(m: ^Module, id: Function_Id) -> ^Function {
 	return xar.get_ptr(&m.functions, id)
 }
 
+// ABI
+
+// NOTE: The ABI will be destroyed at module free, user_data should stay valid until then
+// TODO(robin): Add destructor procedure?
+abi_add :: proc(m: ^Module, user_data: rawptr, procedure: ABI_Procedure) -> (id: ABI_Id) {
+	abi := ABI {
+		user_data = user_data,
+		procedure = procedure,
+	}
+
+	id = ABI_Id(xar.len(m.abis))
+	abi_ptr, _ := xar.push_back_elem_and_get_ptr(&m.abis, abi)
+	abi_ptr.id  = id
+
+	return
+}
+
+_abi_get :: proc(m: ^Module, abi_id: ABI_Id) -> (abi: ABI) {
+	return xar.get(&m.abis, abi_id)
+}
+
 // Module
 
 Module :: struct {
@@ -108,6 +129,9 @@ Module :: struct {
 
 	// Functions
 	functions: xar.Array(Function, 4),
+
+	// ABI
+	abis: xar.Array(ABI, 4),
 }
 
 module_new :: proc() -> (m: ^Module) {

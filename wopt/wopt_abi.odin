@@ -5,6 +5,14 @@ import B "../base"
 
 ABI_Id :: distinct u32
 
+ABI_Procedure :: #type proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (clobbers: Register_Set)
+
+ABI :: struct {
+	id:        ABI_Id,
+	user_data: rawptr,
+	procedure: ABI_Procedure,
+}
+
 ABI_Location_Flag :: enum {
 	Indirect, // the scalar should be written to register[offset], where register contains a pointer
 }
