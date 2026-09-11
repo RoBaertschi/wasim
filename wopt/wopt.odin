@@ -16,14 +16,14 @@ Function_Id :: distinct u32
 FUNCTION_NONE :: Function_Id(0)
 
 Function_Flag :: enum {
-	Always_Inline,
+	Always_Inline = 0,
 	Never_Inline,
 	// Internal flags
-	_In_Progress, // TODO(robin): make this an extra state enum?
+	_In_Progress = 16, // TODO(robin): make this an extra state enum?
 	_Build_Done,
 }
 
-Function_Flags :: bit_set[Function_Flag]
+Function_Flags :: bit_set[Function_Flag; u32]
 
 Function_Body :: struct {
 	blocks: []Block,

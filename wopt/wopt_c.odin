@@ -35,7 +35,6 @@ wopt_type_mem :: proc "c"(m: ^Module) -> Type_Id {
 @export
 wopt_type_struct_simple :: proc "c"(m: ^Module, members: [^]Type_Id, member_count: int) -> Type_Id {
 	context = runtime.default_context()
-	assert(member_count >= 0)
 	return type_struct_simple(m, ..members[:member_count])
 }
 
@@ -47,7 +46,6 @@ wopt_type_struct :: proc "c"(
 	member_count: int,
 ) -> Type_Id {
 	context = runtime.default_context()
-	assert(member_count >= 0)
 	return type_struct(m, size, align, ..members[:member_count])
 }
 
@@ -61,18 +59,14 @@ wopt_function_add :: proc "c"(
 	flags_bits:      u32,
 ) -> Function_Id {
 	context = runtime.default_context()
-	assert(parameter_count >= 0)
-	assert(flags_bits & ~u32(0b11) == 0)
 
-	flags := Function_Flags{}
-	if flags_bits & (1 << u32(Function_Flag.Always_Inline)) != 0 {
-		flags += {.Always_Inline}
-	}
-	if flags_bits & (1 << u32(Function_Flag.Never_Inline)) != 0 {
-		flags += {.Never_Inline}
-	}
-
-	return function_add(m, name, result_type, ..parameters[:parameter_count], flags = flags)
+	return function_add(
+		m,
+		name,
+		result_type,
+		..parameters[:parameter_count],
+		flags = transmute(Function_Flags)flags_bits,
+	)
 }
 
 @export
@@ -195,7 +189,6 @@ wopt_build_type_struct_simple :: proc "c"(
 	member_count: int,
 ) -> Type_Id {
 	context = runtime.default_context()
-	assert(member_count >= 0)
 	return build_type_struct_simple(tbctx, ..members[:member_count])
 }
 
@@ -207,6 +200,5 @@ wopt_build_type_struct :: proc "c"(
 	member_count: int,
 ) -> Type_Id {
 	context = runtime.default_context()
-	assert(member_count >= 0)
 	return build_type_struct(tbctx, size, align, ..members[:member_count])
 }
