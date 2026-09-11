@@ -135,12 +135,6 @@ wopt_build_set_start_block :: proc "c"(tbctx: ^Thread_Build_Context, block_id: B
 }
 
 @export
-wopt_build_value_get_argument :: proc "c"(tbctx: ^Thread_Build_Context, parameter_index: int) -> Value_Id {
-	context = runtime.default_context()
-	return build_value_get_argument(tbctx, parameter_index)
-}
-
-@export
 wopt_build_value_argument :: proc "c"(tbctx: ^Thread_Build_Context, parameter_index: u32) -> Value_Id {
 	context = runtime.default_context()
 	return build_value_argument(tbctx, parameter_index)

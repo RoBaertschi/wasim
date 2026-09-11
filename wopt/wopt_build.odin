@@ -144,11 +144,6 @@ _build_value_get :: proc(tbctx: ^Thread_Build_Context, value_id: Value_Id) -> (v
 	return xar.get(&tbctx.values, value_id)
 }
 
-build_value_get_argument :: proc(tbctx: ^Thread_Build_Context, param_index: int, loc := #caller_location) -> Value_Id {
-	assert(param_index < len(tbctx.current_function.parameters), "param_index >= len(tbctx.current_function.parameters), out of bounds function argument value", loc = loc)
-	return Value_Id(param_index + 1)
-}
-
 build_value_argument :: proc(tbctx: ^Thread_Build_Context, parameter_index: u32) -> Value_Id {
 	type := build_type_none(tbctx)
 
