@@ -5,7 +5,9 @@ import B "../base"
 
 ABI_Id :: distinct u32
 
-ABI_Procedure :: #type proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (clobbers: Register_Set)
+ABI_NONE :: ABI_Id(0)
+
+ABI_Procedure :: #type proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (caller_saved, callee_saved: Register_Set)
 
 ABI :: struct {
 	id:        ABI_Id,

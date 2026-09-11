@@ -1,6 +1,22 @@
 #+vet explicit-allocators
 package wopt
 
+Architecture :: enum {
+	Amd64,
+}
+
+Target :: struct {
+	architecture: Architecture,
+	default_abi:  ABI_Id,
+}
+
+target_infer :: proc() -> (target: Target) {
+	target.architecture = .Amd64   // TODO(robin): add support for more architectures
+	target.default_abi  = ABI_NONE // TODO(robin): detect default abi based on OS
+
+	return
+}
+
 Register     :: distinct u8
 Register_Set :: bit_set[0..=63; u64]
 

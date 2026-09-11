@@ -33,6 +33,7 @@ Function_Body :: struct {
 
 Function :: struct {
 	id:         Function_Id,
+	abi:        ABI_Id,
 	name:       string,
 	flags:      Function_Flags,
 	parameters: []Type_Id,
@@ -63,17 +64,22 @@ Function :: struct {
 //
 // Returns:
 //  id - an id that represents the function inside the specific module
-function_add :: proc(m: ^Module, name: string, result_type: Type_Id, parameter: ..Type_Id, flags := Function_Flags{}) -> (id: Function_Id) {
+function_add :: proc(m: ^Module, name: string, result_type: Type_Id, parameter: ..Type_Id, flags := Function_Flags{}, abi_id := ABI_NONE) -> (id: Function_Id) {
 	if m.frozen {
 		panic("`function_add` is only available for unfrozen modules due to the builder api being multi threaded")
 	}
 
 	assert(!(.Never_Inline in flags && .Always_Inline in flags), "Always_Inline and Never_Inline cannot both be specified on the same function")
 	function := Function {
+		abi        = abi_id,
 		name       = name,
 		flags      = flags,
 		result     = result_type,
 		parameters = parameter,
+	}
+
+	if function.abi == ABI_NONE {
+		function.abi = m.target.default_abi
 	}
 
 	id               = Function_Id(xar.len(m.functions))
@@ -121,6 +127,7 @@ _abi_get :: proc(m: ^Module, abi_id: ABI_Id) -> (abi: ABI) {
 Module :: struct {
 	arena:    ^B.Arena,
 	interner: strings.Intern,
+	target:   Target,
 	frozen:   bool,
 
 	// Types
@@ -137,18 +144,23 @@ Module :: struct {
 module_new :: proc() -> (m: ^Module) {
 	m = B.arena_bootstrap_new(Module, "arena")
 
-	xar.init(&m.functions, B.arena_allocator(m.arena))
-	m.type_interner = type_interner_new()
+	// TODO(robin): allow user to specify target
+	m.target = target_infer()
 
 	// NOTE: We use the heap allocator for the map, because storing a long lived map
-	//       inside an arena wastes ~100%
+	//       inside an arena wastes ~50%
 	//       the strings themselves are ok to be stored in the arena
 	strings.intern_init(&m.interner, B.arena_allocator(m.arena), os.heap_allocator())
+	m.type_interner = type_interner_new()
+	xar.init(&m.functions, B.arena_allocator(m.arena))
+	xar.init(&m.abis, B.arena_allocator(m.arena))
 
 	type_intern(m, { kind = .Memory })
+	type_intern(m, { kind = .I32 })
 
 	// add zero sentinal function
 	xar.push_back(&m.functions, Function {})
+	xar.push_back(&m.abis, ABI {})
 
 	return
 }

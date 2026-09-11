@@ -39,4 +39,13 @@ Amd64_Register :: enum u8 {
 	XMM15,
 }
 
+Amd64_Register_Set :: bit_set[Amd64_Register; u64]
+
 amd64_init :: proc() {}
+
+amd64_abi_sysv : ABI_Procedure : proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (caller_saved, callee_saved: Register_Set) {
+	callee_saved = transmute(Register_Set)Amd64_Register_Set{ .RBX, .RSP, .RBP, .R12, .R13, .R14, .R15 }
+	caller_saved = transmute(Register_Set)Amd64_Register_Set{}
+
+	return
+}
