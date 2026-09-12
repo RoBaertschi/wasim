@@ -10,9 +10,10 @@ Target :: struct {
 	default_abi:  ABI_Id,
 }
 
-target_infer :: proc() -> (target: Target) {
-	target.architecture = .Amd64   // TODO(robin): add support for more architectures
-	target.default_abi  = ABI_NONE // TODO(robin): detect default abi based on OS
+// Infers the target based on the target that the library was compiled for
+target_infer :: proc(m: ^Module) -> (target: Target) {
+	target.architecture = .Amd64           // TODO(robin, 20260912-105812): add support for more architectures
+	target.default_abi  = m.abi_amd64_sysv // TODO(robin, 20260912-120319): detect default abi based on OS
 
 	return
 }
@@ -20,7 +21,7 @@ target_infer :: proc() -> (target: Target) {
 Register     :: distinct u8
 Register_Set :: bit_set[0..=63; u64]
 
-INVALID_REGISTER :: Register(0xFF)
+REGISTER_INVALID :: Register(0xFF)
 
 Register_Constraint :: struct {
 	allowed: Register_Set,

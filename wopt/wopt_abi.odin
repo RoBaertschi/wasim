@@ -3,11 +3,34 @@ package wopt
 
 import B "../base"
 
+// An Id to refer to a specific ABI.
+//
+// An ABI currently defines the calling convention of a function. It's an interface so that any user can add large variations of
+// different calling conventions. The ABI informs per function the backend about where specific inputs and outputs are/go.
+// The stack is defined in the argument stack, which is a area of size `ABI_Config.argument_stack_size` that is setup directly
+// before the call instruction. So on AMD64, the return address is pushed after it. The stack will be aligned by the backend
+// to `ABI_Config.align_stack_to` bytes. Note that it is aligned to that before the call, so the return address pushed by call
+// might dealign it again, which is expected. The ABI also specifies which registers a caller needs to retain (the call clobbers them)
+// and which the callee has to retain (the old ones need to be spilled and restored later on).
+//
+// The inputs/output are a list of `ABI_Value`s that contain the type of the value, it's children (for structs) and optionally an
+// `ABI_Location` pointer. Only scalars (i32) contain a location, no struct can have a location. Locations are provided by the
+// backend so that the ABI procedure does not have to allocate anything that the backend uses (makes memory management easier).
+// This might have to change in the future because we might need to support multiple location scalars like 128-bit integers.
+//
+// TODO(robin, 20260912-110007): lift the requirement of one ABI Location per Value
 ABI_Id :: distinct u32
 
 ABI_NONE :: ABI_Id(0)
 
-ABI_Procedure :: #type proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (caller_saved, callee_saved: Register_Set)
+ABI_Config :: struct {
+	caller_saved:        Register_Set,
+	callee_saved:        Register_Set,
+	align_stack_to:      int,
+	argument_stack_size: int,
+}
+
+ABI_Procedure :: #type proc "c" (user_data: rawptr, parameters: []ABI_Value, result: ABI_Value) -> (config: ABI_Config)
 
 ABI :: struct {
 	id:        ABI_Id,
@@ -21,11 +44,17 @@ ABI_Location_Flag :: enum {
 
 ABI_Location_Flags :: bit_set[ABI_Location_Flag; u8]
 
+// An ABI location describes the place a specific `ABI_Value` lifes.
+// It can either life on the argument stack or in an argument.
+// The argument stack is a area of stack right before the call instruction.
+//
+// TODO(robin, 20260912-110007): lift the requirement of one ABI Location per Value
+// TODO(robin, 20260828-211721): adjust for multiple architectures
 ABI_Location :: struct {
 	offset:          int,                 // where in the specified location should we put the scalar
 	indirect_offset: int,                 // where at the specified indirect offset should we put the scalar
 	register:        Register,            // register or INVALID_REGISTER, if no register then offset is stack offset
-	flags:           ABI_Location_Flags, // flags
+	flags:           ABI_Location_Flags,  // flags
 	_:               [size_of(int)-2]u8,  // padding to keep ABI explicit
 }
 

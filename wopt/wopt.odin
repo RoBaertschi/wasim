@@ -139,13 +139,11 @@ Module :: struct {
 
 	// ABI
 	abis: xar.Array(ABI, 4),
+	abi_amd64_sysv: ABI_Id,
 }
 
 module_new :: proc() -> (m: ^Module) {
 	m = B.arena_bootstrap_new(Module, "arena")
-
-	// TODO(robin): allow user to specify target
-	m.target = target_infer()
 
 	// NOTE: We use the heap allocator for the map, because storing a long lived map
 	//       inside an arena wastes ~50%
@@ -161,6 +159,11 @@ module_new :: proc() -> (m: ^Module) {
 	// add zero sentinal function
 	xar.push_back(&m.functions, Function {})
 	xar.push_back(&m.abis, ABI {})
+
+	m.abi_amd64_sysv = abi_add(m, nil, amd64_abi_sysv)
+
+	// TODO(robin, 20260912-120102): allow user to specify target
+	m.target = target_infer(m)
 
 	return
 }
